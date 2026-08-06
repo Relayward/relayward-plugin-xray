@@ -275,12 +275,17 @@ func (value Configuration) XrayJSON() ([]byte, error) {
 		})
 	}
 	result := map[string]any{
-		"log":       map[string]any{"loglevel": "warning"},
-		"api":       map[string]any{"tag": "relayward-api", "services": []string{"HandlerService", "StatsService"}},
-		"inbounds":  inbounds,
-		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}}},
+		"log": map[string]any{"loglevel": "warning"},
+		"api": map[string]any{"tag": "relayward-api", "services": []string{
+			"HandlerService", "RoutingService", "StatsService",
+		}},
+		"inbounds": inbounds,
+		"outbounds": []any{
+			map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}},
+			map[string]any{"tag": "blocked", "protocol": "blackhole", "settings": map[string]any{}},
+		},
 		"policy": map[string]any{"levels": map[string]any{"0": map[string]any{
-			"statsUserUplink": true, "statsUserDownlink": true,
+			"statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true,
 		}}},
 		"routing": map[string]any{"rules": []any{map[string]any{
 			"type": "field", "inboundTag": []string{"relayward-api"}, "outboundTag": "relayward-api",

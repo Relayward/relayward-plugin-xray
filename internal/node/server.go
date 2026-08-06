@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
 	"github.com/Relayward/relayward-sdk/contract"
 	nodepluginv1 "github.com/Relayward/relayward-sdk/nodeplugin/v1"
 	"google.golang.org/grpc/codes"
@@ -19,7 +20,10 @@ type Runtime interface {
 	Validate(context.Context, config.Configuration) error
 	Apply(context.Context, uint64, string, config.Configuration) error
 	ApplyServiceState(context.Context, uint64, uint64, string, string, bool) error
+	ApplyDynamicBlocks(context.Context, uint64, uint64, []xrayruntime.DynamicBlock) error
 	CollectTraffic(context.Context) ([]xrayruntime.TrafficCounter, error)
+	CollectActivity(context.Context, uint64, uint32) (xrayruntime.ActivityPage, error)
+	TelemetryStreamID() string
 	GetStatus() xrayruntime.Status
 }
 
@@ -35,10 +39,16 @@ func New(version string, runtime Runtime) *Server {
 
 func (server *Server) GetInfo(context.Context, *nodepluginv1.GetInfoRequest) (*nodepluginv1.GetInfoResponse, error) {
 	return &nodepluginv1.GetInfoResponse{
-		ApiVersion:   contract.NodePluginAPIVersion,
-		PluginId:     pluginmeta.ID,
-		Version:      server.version,
-		Capabilities: []string{nodepluginv1.CapabilityServiceControl, nodepluginv1.CapabilityTrafficCounters},
+		ApiVersion: contract.NodePluginAPIVersion,
+		PluginId:   pluginmeta.ID,
+		Version:    server.version,
+		Capabilities: []string{
+			nodepluginv1.CapabilityRecentActivity,
+			nodepluginv1.CapabilityDynamicBlocking,
+			nodepluginv1.CapabilityServiceControl,
+			nodepluginv1.CapabilityTrafficCounters,
+		},
+		TelemetryStreamId: server.runtime.TelemetryStreamID(),
 	}, nil
 }
 
@@ -53,10 +63,27 @@ func (server *Server) CollectTelemetry(ctx context.Context, request *nodepluginv
 		}
 		return nil, status.Error(codes.Unavailable, "Xray traffic collection failed")
 	}
+	activity, err := server.runtime.CollectActivity(ctx, request.AfterSequence, request.MaximumEvents)
+	if err != nil {
+		switch {
+		case errors.Is(err, xrayruntime.ErrRuntimeUnavailable):
+			return nil, status.Error(codes.FailedPrecondition, "Xray runtime is unavailable")
+		case errors.Is(err, xrayruntime.ErrTelemetryDataLoss):
+			return nil, status.Error(codes.DataLoss, "Xray activity cursor is no longer available")
+		case errors.Is(err, xrayruntime.ErrTelemetryCursor):
+			return nil, status.Error(codes.InvalidArgument, "Xray activity cursor is ahead of the stream")
+		case errors.Is(err, xrayruntime.ErrTelemetryFull):
+			return nil, status.Error(codes.ResourceExhausted, "Xray activity queue is full")
+		default:
+			return nil, status.Error(codes.Unavailable, "Xray activity collection failed")
+		}
+	}
 	response := &nodepluginv1.CollectTelemetryResponse{
 		ObservedAtUnixNano: time.Now().UTC().UnixNano(),
 		Counters:           make([]*nodepluginv1.TrafficCounter, len(values)),
-		NextSequence:       request.AfterSequence,
+		Events:             make([]*nodepluginv1.AccessEvent, len(activity.Events)),
+		NextSequence:       activity.NextSequence,
+		HasMore:            activity.HasMore,
 	}
 	for index, value := range values {
 		response.Counters[index] = &nodepluginv1.TrafficCounter{
@@ -67,10 +94,46 @@ func (server *Server) CollectTelemetry(ctx context.Context, request *nodepluginv
 			DownloadBytes:   value.DownloadBytes,
 		}
 	}
+	for index, value := range activity.Events {
+		response.Events[index] = &nodepluginv1.AccessEvent{
+			Sequence: value.Sequence, EventId: value.EventID, ObservedAtUnixNano: value.ObservedAt,
+			AuthorizationId: value.AuthorizationID, ServiceId: value.ServiceID,
+			SourceIp: value.SourceIP, Action: agentv1.AccessActionAccepted,
+		}
+	}
 	if err := nodepluginv1.ValidateCollectTelemetryResponse(request, response); err != nil {
-		return nil, status.Error(codes.Internal, "Xray returned invalid traffic counters")
+		return nil, status.Error(codes.Internal, "Xray returned invalid telemetry")
 	}
 	return response, nil
+}
+
+func (server *Server) ReplaceDynamicBlocks(ctx context.Context, request *nodepluginv1.ReplaceDynamicBlocksRequest) (*nodepluginv1.ReplaceDynamicBlocksResponse, error) {
+	if err := nodepluginv1.ValidateReplaceDynamicBlocksRequest(request); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid dynamic block request")
+	}
+	blocks := make([]xrayruntime.DynamicBlock, len(request.Blocks))
+	for index, block := range request.Blocks {
+		blocks[index] = xrayruntime.DynamicBlock{
+			AuthorizationID: block.AuthorizationId, ServiceID: block.ServiceId, SourceIP: block.SourceIp,
+			ExpiresAtUnixNano: block.ExpiresAtUnixNano,
+		}
+	}
+	if err := server.runtime.ApplyDynamicBlocks(ctx, request.PolicyGeneration, request.BlockRevision, blocks); err != nil {
+		switch {
+		case errors.Is(err, xrayruntime.ErrUnsupportedService):
+			return nil, status.Error(codes.InvalidArgument, "unsupported Xray service")
+		case errors.Is(err, xrayruntime.ErrRuntimeUnavailable):
+			return nil, status.Error(codes.FailedPrecondition, "Xray runtime is unavailable")
+		case errors.Is(err, xrayruntime.ErrDynamicBlockConflict):
+			return nil, status.Error(codes.Aborted, "Xray dynamic block revision changed")
+		default:
+			return nil, status.Error(codes.Unavailable, "Xray dynamic block update failed")
+		}
+	}
+	return &nodepluginv1.ReplaceDynamicBlocksResponse{
+		PolicyGeneration: request.PolicyGeneration, BlockRevision: request.BlockRevision,
+		BlockCount: uint32(len(request.Blocks)),
+	}, nil
 }
 
 func (server *Server) SetServiceState(ctx context.Context, request *nodepluginv1.SetServiceStateRequest) (*nodepluginv1.SetServiceStateResponse, error) {

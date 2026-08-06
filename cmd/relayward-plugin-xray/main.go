@@ -92,7 +92,10 @@ func runNode(socketPath string) error {
 	}
 	source := xrayrelease.NewClient()
 	installer := xrayrelease.NewInstaller(dataDirectory, source)
-	runtime := xrayruntime.NewManager(dataDirectory, installer)
+	runtime, err := xrayruntime.NewManager(dataDirectory, installer)
+	if err != nil {
+		return err
+	}
 	listener, err := pluginsocket.Listen(socketPath)
 	if err != nil {
 		return err

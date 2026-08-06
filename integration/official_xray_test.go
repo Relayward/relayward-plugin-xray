@@ -38,7 +38,10 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	}
 	directory := integrationDataDirectory(t)
 	installer := xrayrelease.NewInstaller(directory, xrayrelease.NewClient())
-	runtime := xrayruntime.NewManager(directory, installer)
+	runtime, err := xrayruntime.NewManager(directory, installer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if err := runtime.Validate(ctx, configuration); err != nil {
@@ -58,6 +61,20 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	counters, err := runtime.CollectTraffic(ctx)
 	if err != nil || len(counters) != 1 || counters[0].AuthorizationID != authorizationID {
 		t.Fatalf("CollectTraffic() = %+v, %v", counters, err)
+	}
+	activity, err := runtime.CollectActivity(ctx, 0, 10)
+	if err != nil || len(activity.Events) != 0 || activity.NextSequence != 0 {
+		t.Fatalf("CollectActivity() = %+v, %v", activity, err)
+	}
+	blocks := []xrayruntime.DynamicBlock{{
+		AuthorizationID: authorizationID, ServiceID: config.VLESSRealityServiceID, SourceIP: "192.0.2.1",
+		ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
+	}}
+	if err := runtime.ApplyDynamicBlocks(ctx, 1, 1, blocks); err != nil {
+		t.Fatalf("ApplyDynamicBlocks() error = %v", err)
+	}
+	if err := runtime.ApplyDynamicBlocks(ctx, 1, 2, nil); err != nil {
+		t.Fatalf("clear ApplyDynamicBlocks() error = %v", err)
 	}
 	closeContext, closeCancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer closeCancel()

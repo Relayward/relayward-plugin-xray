@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"testing"
+	"time"
 
 	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
 	nodepluginv1 "github.com/Relayward/relayward-sdk/nodeplugin/v1"
@@ -19,6 +20,8 @@ type fakeRuntime struct {
 	serviceState  bool
 	serviceID     string
 	authorization string
+	blocks        []xrayruntime.DynamicBlock
+	blockRevision uint64
 }
 
 func (*fakeRuntime) Validate(context.Context, config.Configuration) error { return nil }
@@ -39,6 +42,19 @@ func (*fakeRuntime) CollectTraffic(context.Context) ([]xrayruntime.TrafficCounte
 		AuthorizationID: "10000000-0000-4000-8000-000000000001",
 		ServiceID:       config.VLESSRealityServiceID, CounterEpoch: "epoch-1", UploadBytes: 12, DownloadBytes: 34,
 	}}, nil
+}
+func (*fakeRuntime) TelemetryStreamID() string { return "0123456789abcdef0123456789abcdef" }
+func (*fakeRuntime) CollectActivity(context.Context, uint64, uint32) (xrayruntime.ActivityPage, error) {
+	return xrayruntime.ActivityPage{Events: []xrayruntime.ActivityEvent{{
+		Sequence: 1, EventID: "online-1", ObservedAt: time.Now().UTC().UnixNano(),
+		AuthorizationID: "10000000-0000-4000-8000-000000000001",
+		ServiceID:       config.VLESSRealityServiceID, SourceIP: "192.0.2.1",
+	}}, NextSequence: 1}, nil
+}
+func (runtime *fakeRuntime) ApplyDynamicBlocks(_ context.Context, _ uint64, revision uint64, blocks []xrayruntime.DynamicBlock) error {
+	runtime.blockRevision = revision
+	runtime.blocks = append([]xrayruntime.DynamicBlock(nil), blocks...)
+	return nil
 }
 
 func TestServerAppliesConfiguration(t *testing.T) {
@@ -112,8 +128,26 @@ func TestServerControlsServiceAndReturnsTraffic(t *testing.T) {
 	if err := nodepluginv1.ValidateCollectTelemetryResponse(request, telemetry); err != nil {
 		t.Fatal(err)
 	}
-	if len(telemetry.Counters) != 1 || telemetry.Counters[0].UploadBytes != 12 {
+	if len(telemetry.Counters) != 1 || telemetry.Counters[0].UploadBytes != 12 || len(telemetry.Events) != 1 ||
+		telemetry.Events[0].SourceIp != "192.0.2.1" {
 		t.Fatalf("telemetry = %+v", telemetry)
+	}
+	blocks := &nodepluginv1.ReplaceDynamicBlocksRequest{
+		PolicyGeneration: 1, BlockRevision: 3,
+		Blocks: []*nodepluginv1.DynamicBlock{{
+			AuthorizationId: authorizationID, ServiceId: config.VLESSRealityServiceID,
+			SourceIp: "192.0.2.2", ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
+		}},
+	}
+	blockResponse, err := server.ReplaceDynamicBlocks(context.Background(), blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodepluginv1.ValidateReplaceDynamicBlocksResponse(blocks, blockResponse); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.blockRevision != 3 || len(runtime.blocks) != 1 || runtime.blocks[0].SourceIP != "192.0.2.2" {
+		t.Fatalf("runtime blocks = %+v", runtime.blocks)
 	}
 }
 

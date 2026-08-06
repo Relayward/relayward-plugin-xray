@@ -26,6 +26,28 @@ func TestConfigurationBuildsXrayAndStableCredentials(t *testing.T) {
 	if err != nil || !json.Valid(xrayJSON) {
 		t.Fatalf("XrayJSON() = %s, %v", xrayJSON, err)
 	}
+	var generated struct {
+		API struct {
+			Services []string `json:"services"`
+		} `json:"api"`
+		Outbounds []struct {
+			Tag      string `json:"tag"`
+			Protocol string `json:"protocol"`
+		} `json:"outbounds"`
+		Policy struct {
+			Levels map[string]struct {
+				StatsUserOnline bool `json:"statsUserOnline"`
+			} `json:"levels"`
+		} `json:"policy"`
+	}
+	if err := json.Unmarshal(xrayJSON, &generated); err != nil {
+		t.Fatal(err)
+	}
+	if len(generated.API.Services) != 3 || generated.API.Services[1] != "RoutingService" ||
+		len(generated.Outbounds) != 2 || generated.Outbounds[1].Tag != "blocked" ||
+		generated.Outbounds[1].Protocol != "blackhole" || !generated.Policy.Levels["0"].StatsUserOnline {
+		t.Fatalf("generated Xray services = %+v", generated)
+	}
 	first, err := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", VLESSRealityServiceID)
 	if err != nil {
 		t.Fatal(err)

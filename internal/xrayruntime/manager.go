@@ -47,14 +47,18 @@ type Manager struct {
 	startupGrace  time.Duration
 	connectAPI    func(context.Context, config.Configuration) (runtimeAPI, error)
 
-	operation  sync.Mutex
-	state      sync.Mutex
-	process    *managedProcess
-	running    *runtimeSpec
-	generation uint64
-	digest     string
-	epoch      string
-	services   map[string]*serviceState
+	operation             sync.Mutex
+	state                 sync.Mutex
+	process               *managedProcess
+	running               *runtimeSpec
+	generation            uint64
+	digest                string
+	epoch                 string
+	services              map[string]*serviceState
+	telemetry             *telemetryStore
+	blocks                []DynamicBlock
+	blockPolicyGeneration uint64
+	blockRevision         uint64
 }
 
 type runtimeSpec struct {
@@ -82,7 +86,11 @@ type managedProcess struct {
 	waitError error
 }
 
-func NewManager(dataDirectory string, installer Installer) *Manager {
+func NewManager(dataDirectory string, installer Installer) (*Manager, error) {
+	telemetry, err := openTelemetryStore(dataDirectory)
+	if err != nil {
+		return nil, err
+	}
 	return &Manager{
 		dataDirectory: dataDirectory,
 		installer:     installer,
@@ -90,8 +98,9 @@ func NewManager(dataDirectory string, installer Installer) *Manager {
 		connectAPI: func(ctx context.Context, configuration config.Configuration) (runtimeAPI, error) {
 			return connectXrayAPI(ctx, configuration)
 		},
-		services: make(map[string]*serviceState),
-	}
+		services:  make(map[string]*serviceState),
+		telemetry: telemetry,
+	}, nil
 }
 
 func (manager *Manager) Validate(ctx context.Context, configuration config.Configuration) error {
@@ -245,6 +254,12 @@ func (manager *Manager) startConfigured(ctx context.Context, spec *runtimeSpec) 
 	}
 	process.api = api
 	if err := manager.restoreServices(ctx, spec, api); err != nil {
+		stopContext, cancel := context.WithTimeout(context.Background(), processStopTimeout)
+		defer cancel()
+		_ = process.stop(stopContext)
+		return nil, err
+	}
+	if err := manager.restoreBlockRules(ctx, api); err != nil {
 		stopContext, cancel := context.WithTimeout(context.Background(), processStopTimeout)
 		defer cancel()
 		_ = process.stop(stopContext)

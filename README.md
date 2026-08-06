@@ -14,10 +14,14 @@
 - process replacement with restoration of the previous healthy configuration when candidate startup fails
 - dynamic authorization enforcement through Xray's local Handler API
 - cumulative per-authorization upload and download counters through Xray's local Stats API
+- recent accepted activity from Xray's online-user Stats API with a persistent telemetry cursor
+- per-authorization dynamic source-IP blocking through Xray's local Routing API
 - VLESS URI, Mihomo, and sing-box subscription contributions
 - Relayward generation, digest, and health reporting
 
-The current runtime supports one service per node: `vless-reality`. Routing, DNS, additional protocols and transports, certificates, access-event collection, and dynamic source-IP blocking are not implemented.
+The current runtime supports one service per node: `vless-reality`. General routing and DNS configuration, additional protocols and transports, certificates, and full access-log collection are not implemented.
+
+Recent activity is an online-presence signal rather than a full request log. While an authorization remains online, the plugin emits at most one accepted activity event per authorization, service, and source IP every 30 seconds. The stream ID, sequence cursor, unacknowledged events, and refresh index are stored atomically in a private state file so Agent retries and plugin restarts do not create sequence gaps. Dynamic blocks replace the complete Relayward-managed rule set and match authorization email, inbound service, and one source IP together, avoiding collateral blocking of another authorization behind the same NAT.
 
 ## Configuration
 

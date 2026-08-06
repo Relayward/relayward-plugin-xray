@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/protoadapt"
 
@@ -25,6 +27,7 @@ var (
 	ErrUnsupportedService   = errors.New("Xray service is unsupported")
 	ErrServiceDisabled      = errors.New("Xray service is disabled")
 	ErrServiceStateConflict = errors.New("Xray service state revision conflicts with current state")
+	ErrDynamicBlockConflict = errors.New("Xray dynamic block revision conflicts with current state")
 )
 
 type TrafficCounter struct {
@@ -35,6 +38,13 @@ type TrafficCounter struct {
 	DownloadBytes   uint64
 }
 
+type DynamicBlock struct {
+	AuthorizationID   string
+	ServiceID         string
+	SourceIP          string
+	ExpiresAtUnixNano int64
+}
+
 type xrayAPI struct {
 	connection *grpc.ClientConn
 }
@@ -43,6 +53,8 @@ type runtimeAPI interface {
 	addUser(context.Context, string, runtimeCredential) error
 	removeUser(context.Context, string, string) error
 	queryStats(context.Context) ([]trafficStat, error)
+	queryOnlineIPs(context.Context, string) (map[string]int64, error)
+	replaceBlockRules(context.Context, []blockRule) error
 	close()
 }
 
@@ -158,6 +170,106 @@ func (manager *Manager) CollectTraffic(ctx context.Context) ([]TrafficCounter, e
 		return values[i].ServiceID < values[j].ServiceID
 	})
 	return values, nil
+}
+
+func (manager *Manager) TelemetryStreamID() string {
+	return manager.telemetry.streamID()
+}
+
+func (manager *Manager) CollectActivity(ctx context.Context, after uint64, maximum uint32) (ActivityPage, error) {
+	manager.operation.Lock()
+	defer manager.operation.Unlock()
+	manager.state.Lock()
+	process := manager.process
+	manager.state.Unlock()
+	if process == nil || process.exited() || process.api == nil {
+		return ActivityPage{}, ErrRuntimeUnavailable
+	}
+	active := make(map[string]ActivitySource)
+	for _, service := range manager.services {
+		if !service.enabled || service.serviceID != config.VLESSRealityServiceID {
+			continue
+		}
+		email := config.UserEmail(service.authorizationID, service.serviceID)
+		values, err := process.api.queryOnlineIPs(ctx, email)
+		if err != nil {
+			return ActivityPage{}, err
+		}
+		for sourceIP := range values {
+			key := serviceKey(service.authorizationID, service.serviceID) + "\x00" + sourceIP
+			active[key] = ActivitySource{
+				AuthorizationID: service.authorizationID, ServiceID: service.serviceID, SourceIP: sourceIP,
+			}
+		}
+	}
+	return manager.telemetry.appendSnapshot(after, maximum, active, time.Now().UTC())
+}
+
+func (manager *Manager) ApplyDynamicBlocks(ctx context.Context, policyGeneration, blockRevision uint64, blocks []DynamicBlock) error {
+	manager.operation.Lock()
+	defer manager.operation.Unlock()
+	for _, block := range blocks {
+		if block.ServiceID != config.VLESSRealityServiceID {
+			return ErrUnsupportedService
+		}
+		ip := net.ParseIP(block.SourceIP)
+		if ip == nil || ip.String() != block.SourceIP || block.ExpiresAtUnixNano <= 0 {
+			return errors.New("invalid Xray dynamic block")
+		}
+	}
+	if manager.blockRevision != 0 {
+		if blockRevision < manager.blockRevision || policyGeneration < manager.blockPolicyGeneration ||
+			(blockRevision == manager.blockRevision &&
+				(policyGeneration != manager.blockPolicyGeneration || !sameDynamicBlocks(blocks, manager.blocks))) {
+			return ErrDynamicBlockConflict
+		}
+		if blockRevision == manager.blockRevision {
+			return nil
+		}
+	}
+	manager.state.Lock()
+	process := manager.process
+	manager.state.Unlock()
+	if process == nil || process.exited() || process.api == nil {
+		return ErrRuntimeUnavailable
+	}
+	if err := process.api.replaceBlockRules(ctx, runtimeBlockRules(blocks)); err != nil {
+		return err
+	}
+	manager.blocks = append([]DynamicBlock(nil), blocks...)
+	manager.blockPolicyGeneration = policyGeneration
+	manager.blockRevision = blockRevision
+	return nil
+}
+
+func (manager *Manager) restoreBlockRules(ctx context.Context, api runtimeAPI) error {
+	if len(manager.blocks) == 0 {
+		return nil
+	}
+	return api.replaceBlockRules(ctx, runtimeBlockRules(manager.blocks))
+}
+
+func runtimeBlockRules(blocks []DynamicBlock) []blockRule {
+	values := make([]blockRule, len(blocks))
+	for index, block := range blocks {
+		values[index] = blockRule{
+			email:      config.UserEmail(block.AuthorizationID, block.ServiceID),
+			inboundTag: block.ServiceID, sourceIP: block.SourceIP,
+		}
+	}
+	return values
+}
+
+func sameDynamicBlocks(first, second []DynamicBlock) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (manager *Manager) restoreServices(ctx context.Context, spec *runtimeSpec, api runtimeAPI) error {
@@ -334,6 +446,71 @@ func (api *xrayAPI) queryStats(parent context.Context) ([]trafficStat, error) {
 	return values, nil
 }
 
+func (api *xrayAPI) queryOnlineIPs(parent context.Context, email string) (map[string]int64, error) {
+	ctx, cancel := context.WithTimeout(parent, xrayAPITimeout)
+	defer cancel()
+	response := &getStatsOnlineIPListResponse{}
+	err := api.connection.Invoke(ctx, "/xray.app.stats.command.StatsService/GetStatsOnlineIpList",
+		&getStatsRequest{Name: "user>>>" + email + ">>>online"}, response)
+	if status.Code(err) == codes.NotFound {
+		return map[string]int64{}, nil
+	}
+	if err != nil {
+		return nil, errors.New("query Xray online IPs")
+	}
+	values := make(map[string]int64, len(response.IPs))
+	for rawIP, lastSeen := range response.IPs {
+		ip := net.ParseIP(rawIP)
+		if ip == nil || lastSeen <= 0 {
+			return nil, errors.New("Xray returned invalid online IP activity")
+		}
+		values[ip.String()] = lastSeen
+	}
+	return values, nil
+}
+
+type blockRule struct {
+	email      string
+	inboundTag string
+	sourceIP   string
+}
+
+func (api *xrayAPI) replaceBlockRules(parent context.Context, blocks []blockRule) error {
+	rules := make([]*routingRule, 0, len(blocks)+1)
+	rules = append(rules, &routingRule{
+		Tag: "relayward-api", RuleTag: "relayward-api", InboundTag: []string{"relayward-api"},
+	})
+	for index, block := range blocks {
+		ip := net.ParseIP(block.sourceIP)
+		if ip == nil {
+			return errors.New("encode Xray block source IP")
+		}
+		if ipv4 := ip.To4(); ipv4 != nil {
+			ip = ipv4
+		} else {
+			ip = ip.To16()
+		}
+		rules = append(rules, &routingRule{
+			Tag: "blocked", RuleTag: "relayward-block-" + strconv.Itoa(index+1),
+			UserEmail: []string{block.email}, InboundTag: []string{block.inboundTag},
+			SourceGeoIP: []*geoIP{{CIDR: []*cidr{{IP: []byte(ip), Prefix: uint32(len(ip) * 8)}}}},
+		})
+	}
+	encoded, err := marshalLegacy(&routerConfig{Rules: rules})
+	if err != nil {
+		return errors.New("encode Xray routing rules")
+	}
+	request := &addRuleRequest{
+		Config: &typedMessage{Type: "xray.app.router.Config", Value: encoded}, ShouldAppend: false,
+	}
+	ctx, cancel := context.WithTimeout(parent, xrayAPITimeout)
+	defer cancel()
+	if err := api.connection.Invoke(ctx, "/xray.app.router.command.RoutingService/AddRule", request, &emptyMessage{}); err != nil {
+		return errors.New("replace Xray routing rules")
+	}
+	return nil
+}
+
 func marshalLegacy(message protoadapt.MessageV1) ([]byte, error) {
 	return proto.Marshal(protoadapt.MessageV2Of(message))
 }
@@ -382,6 +559,44 @@ type statMessage struct {
 	Value int64  `protobuf:"varint,2,opt,name=value,proto3"`
 }
 
+type getStatsRequest struct {
+	Name   string `protobuf:"bytes,1,opt,name=name,proto3"`
+	Reset_ bool   `protobuf:"varint,2,opt,name=reset,proto3"`
+}
+
+type getStatsOnlineIPListResponse struct {
+	Name string           `protobuf:"bytes,1,opt,name=name,proto3"`
+	IPs  map[string]int64 `protobuf:"bytes,2,rep,name=ips,proto3" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
+}
+
+type routerConfig struct {
+	Rules []*routingRule `protobuf:"bytes,2,rep,name=rule,proto3"`
+}
+
+type routingRule struct {
+	Tag         string   `protobuf:"bytes,1,opt,name=tag,proto3"`
+	UserEmail   []string `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
+	InboundTag  []string `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
+	SourceGeoIP []*geoIP `protobuf:"bytes,11,rep,name=source_geoip,json=sourceGeoip,proto3"`
+	RuleTag     string   `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+}
+
+type geoIP struct {
+	CountryCode string  `protobuf:"bytes,1,opt,name=country_code,json=countryCode,proto3"`
+	CIDR        []*cidr `protobuf:"bytes,2,rep,name=cidr,proto3"`
+	Reverse     bool    `protobuf:"varint,3,opt,name=reverse_match,json=reverseMatch,proto3"`
+}
+
+type cidr struct {
+	IP     []byte `protobuf:"bytes,1,opt,name=ip,proto3"`
+	Prefix uint32 `protobuf:"varint,2,opt,name=prefix,proto3"`
+}
+
+type addRuleRequest struct {
+	Config       *typedMessage `protobuf:"bytes,1,opt,name=config,proto3"`
+	ShouldAppend bool          `protobuf:"varint,2,opt,name=shouldAppend,proto3"`
+}
+
 type emptyMessage struct{}
 
 func (value *typedMessage) Reset()          { *value = typedMessage{} }
@@ -411,9 +626,32 @@ func (*queryStatsResponse) ProtoMessage()   {}
 func (value *statMessage) Reset()           { *value = statMessage{} }
 func (*statMessage) String() string         { return "" }
 func (*statMessage) ProtoMessage()          {}
-func (value *emptyMessage) Reset()          { *value = emptyMessage{} }
-func (*emptyMessage) String() string        { return "" }
-func (*emptyMessage) ProtoMessage()         {}
+func (value *getStatsRequest) Reset()       { *value = getStatsRequest{} }
+func (*getStatsRequest) String() string     { return "" }
+func (*getStatsRequest) ProtoMessage()      {}
+func (value *getStatsOnlineIPListResponse) Reset() {
+	*value = getStatsOnlineIPListResponse{}
+}
+func (*getStatsOnlineIPListResponse) String() string { return "" }
+func (*getStatsOnlineIPListResponse) ProtoMessage()  {}
+func (value *routerConfig) Reset()                   { *value = routerConfig{} }
+func (*routerConfig) String() string                 { return "" }
+func (*routerConfig) ProtoMessage()                  {}
+func (value *routingRule) Reset()                    { *value = routingRule{} }
+func (*routingRule) String() string                  { return "" }
+func (*routingRule) ProtoMessage()                   {}
+func (value *geoIP) Reset()                          { *value = geoIP{} }
+func (*geoIP) String() string                        { return "" }
+func (*geoIP) ProtoMessage()                         {}
+func (value *cidr) Reset()                           { *value = cidr{} }
+func (*cidr) String() string                         { return "" }
+func (*cidr) ProtoMessage()                          {}
+func (value *addRuleRequest) Reset()                 { *value = addRuleRequest{} }
+func (*addRuleRequest) String() string               { return "" }
+func (*addRuleRequest) ProtoMessage()                {}
+func (value *emptyMessage) Reset()                   { *value = emptyMessage{} }
+func (*emptyMessage) String() string                 { return "" }
+func (*emptyMessage) ProtoMessage()                  {}
 
 func serviceKey(authorizationID, serviceID string) string {
 	return authorizationID + "\x00" + serviceID
