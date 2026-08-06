@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	directory := t.TempDir()
+	directory := integrationDataDirectory(t)
 	installer := xrayrelease.NewInstaller(directory, xrayrelease.NewClient())
 	runtime := xrayruntime.NewManager(directory, installer)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -63,6 +64,25 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	if err := runtime.Close(closeContext); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
+}
+
+func integrationDataDirectory(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	t.Cleanup(func() {
+		if err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return os.Chmod(path, 0o700)
+			}
+			return nil
+		}); err != nil {
+			t.Errorf("restore temporary directory permissions: %v", err)
+		}
+	})
+	return directory
 }
 
 func freePort(t *testing.T) uint16 {

@@ -37,7 +37,7 @@ func TestInstallerEnsuresAndReusesVerifiedVersion(t *testing.T) {
 	source := &fakeSource{archive: archive, asset: Asset{
 		Version: "26.3.27", URL: "unused", Size: int64(len(archive)), SHA256: hex.EncodeToString(digest[:]),
 	}}
-	installer := NewInstaller(t.TempDir(), source)
+	installer := NewInstaller(testDataDirectory(t), source)
 	installation, err := installer.Ensure(context.Background(), "26.3.27")
 	if err != nil {
 		t.Fatalf("Ensure() error = %v", err)
@@ -63,7 +63,7 @@ func TestInstallerRejectsUnsafeArchive(t *testing.T) {
 	source := &fakeSource{archive: archive, asset: Asset{
 		Version: "26.3.27", Size: int64(len(archive)), SHA256: hex.EncodeToString(digest[:]),
 	}}
-	if _, err := NewInstaller(t.TempDir(), source).Ensure(context.Background(), "26.3.27"); err == nil {
+	if _, err := NewInstaller(testDataDirectory(t), source).Ensure(context.Background(), "26.3.27"); err == nil {
 		t.Fatal("Ensure() unexpectedly succeeded")
 	}
 }
@@ -75,7 +75,7 @@ func TestInstallerDetectsInstalledBinaryModification(t *testing.T) {
 	source := &fakeSource{archive: archive, asset: Asset{
 		Version: "26.3.27", Size: int64(len(archive)), SHA256: hex.EncodeToString(digest[:]),
 	}}
-	installer := NewInstaller(t.TempDir(), source)
+	installer := NewInstaller(testDataDirectory(t), source)
 	installation, err := installer.Ensure(context.Background(), "26.3.27")
 	if err != nil {
 		t.Fatalf("Ensure() error = %v", err)
@@ -92,6 +92,25 @@ func TestInstallerDetectsInstalledBinaryModification(t *testing.T) {
 	if _, err := installer.Ensure(context.Background(), "26.3.27"); err == nil {
 		t.Fatal("Ensure() unexpectedly accepted modified binary")
 	}
+}
+
+func testDataDirectory(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	t.Cleanup(func() {
+		if err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return os.Chmod(path, 0o700)
+			}
+			return nil
+		}); err != nil {
+			t.Errorf("restore temporary directory permissions: %v", err)
+		}
+	})
+	return directory
 }
 
 func testArchive(t *testing.T, files map[string][]byte) []byte {
