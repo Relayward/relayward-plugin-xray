@@ -76,6 +76,8 @@ func (server *Server) InvokeUI(ctx context.Context, request *centerpluginv1.Invo
 	var value any
 	var err error
 	switch request.Method {
+	case "service-types.list":
+		value = map[string]any{"service_types": config.SupportedServiceTypes()}
 	case "nodes.list":
 		value, err = server.listNodes(ctx)
 	case "configuration.get":

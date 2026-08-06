@@ -63,18 +63,32 @@ func TestRenderRejectsMissingPublicAddressAndUnknownService(t *testing.T) {
 	}
 }
 
+func TestSupportedFormatsMatchVLESSRealityRenderer(t *testing.T) {
+	t.Parallel()
+	formats := SupportedFormats(config.ServiceTypeVLESSReality)
+	if !SupportsServiceType(config.ServiceTypeVLESSReality) || len(formats) != 3 ||
+		formats[0] != "base64" || formats[1] != "mihomo" || formats[2] != "sing-box" ||
+		SupportsServiceType("unknown") || SupportedFormats("unknown") != nil {
+		t.Fatalf("supported formats = %v", formats)
+	}
+}
+
 func testConfiguration(t *testing.T) config.Configuration {
 	t.Helper()
 	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 8443, Target: "www.microsoft.com:443",
-			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 443, PublicPort: 8443,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 444, PublicPort: 9443, Target: "www.cloudflare.com:443",
-			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 444, PublicPort: 9443,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			},
 		},
 	})
 	if err != nil {

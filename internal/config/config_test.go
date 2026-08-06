@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestConfigurationBuildsMultipleXrayServicesAndStableCredentials(t *testing.T) {
+func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) {
 	t.Parallel()
 	value, err := NewConfiguration("26.3.27", 10085, testEditableServices())
 	if err != nil {
@@ -23,37 +23,6 @@ func TestConfigurationBuildsMultipleXrayServicesAndStableCredentials(t *testing.
 		decoded.Services[1].ServiceID != "reality-main" {
 		t.Fatalf("configuration = %+v", decoded)
 	}
-	xrayJSON, err := decoded.XrayJSON()
-	if err != nil || !json.Valid(xrayJSON) {
-		t.Fatalf("XrayJSON() = %s, %v", xrayJSON, err)
-	}
-	var generated struct {
-		API struct {
-			Services []string `json:"services"`
-		} `json:"api"`
-		Inbounds []struct {
-			Tag string `json:"tag"`
-		} `json:"inbounds"`
-		Outbounds []struct {
-			Tag      string `json:"tag"`
-			Protocol string `json:"protocol"`
-		} `json:"outbounds"`
-		Policy struct {
-			Levels map[string]struct {
-				StatsUserOnline bool `json:"statsUserOnline"`
-			} `json:"levels"`
-		} `json:"policy"`
-	}
-	if err := json.Unmarshal(xrayJSON, &generated); err != nil {
-		t.Fatal(err)
-	}
-	if len(generated.API.Services) != 3 || generated.API.Services[1] != "RoutingService" ||
-		len(generated.Inbounds) != 3 || generated.Inbounds[1].Tag != "reality-backup" ||
-		generated.Inbounds[2].Tag != "reality-main" || len(generated.Outbounds) != 2 ||
-		generated.Outbounds[1].Tag != "blocked" || generated.Outbounds[1].Protocol != "blackhole" ||
-		!generated.Policy.Levels["0"].StatsUserOnline {
-		t.Fatalf("generated Xray configuration = %+v", generated)
-	}
 	first, err := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", "reality-main")
 	if err != nil {
 		t.Fatal(err)
@@ -65,33 +34,24 @@ func TestConfigurationBuildsMultipleXrayServicesAndStableCredentials(t *testing.
 		t.Fatalf("derived credentials = %q, %q, %q, %q", first, second, otherService, otherAuthorization)
 	}
 	for _, service := range decoded.Services {
-		publicKey, err := RealityPublicKey(service.PrivateKey)
+		publicKey, err := RealityPublicKey(service.VLESSReality.PrivateKey)
 		if err != nil || len(publicKey) != 43 {
 			t.Fatalf("RealityPublicKey(%q) = %q, %v", service.ServiceID, publicKey, err)
 		}
 	}
 }
 
-func TestConfigurationOmitsDisabledServiceFromXray(t *testing.T) {
+func TestSupportedServiceTypeCatalogIsDefensive(t *testing.T) {
 	t.Parallel()
-	services := testEditableServices()
-	services[1].Enabled = false
-	value, err := NewConfiguration("26.3.27", 10085, services)
-	if err != nil {
-		t.Fatal(err)
+	definitions := SupportedServiceTypes()
+	if len(definitions) != 1 || definitions[0].ID != ServiceTypeVLESSReality ||
+		len(definitions[0].Capabilities.SubscriptionFormats) != 3 {
+		t.Fatalf("SupportedServiceTypes() = %+v", definitions)
 	}
-	raw, err := value.XrayJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generated struct {
-		Inbounds []json.RawMessage `json:"inbounds"`
-	}
-	if err := json.Unmarshal(raw, &generated); err != nil {
-		t.Fatal(err)
-	}
-	if len(generated.Inbounds) != 2 {
-		t.Fatalf("inbounds = %d, want API plus one enabled service", len(generated.Inbounds))
+	definitions[0].Capabilities.SubscriptionFormats[0] = "changed"
+	definition, exists := ServiceTypeDefinitionByID(ServiceTypeVLESSReality)
+	if !exists || definition.Capabilities.SubscriptionFormats[0] != "base64" {
+		t.Fatalf("ServiceTypeDefinitionByID() = %+v, %t", definition, exists)
 	}
 }
 
@@ -114,9 +74,16 @@ func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 		"unsorted services": func(value *Configuration) {
 			value.Services[0], value.Services[1] = value.Services[1], value.Services[0]
 		},
-		"invalid target":       func(value *Configuration) { value.Services[0].Target = "127.0.0.1:443" },
-		"invalid key":          func(value *Configuration) { value.Services[0].PrivateKey = "secret" },
-		"invalid short ID":     func(value *Configuration) { value.Services[0].ShortIDs = []string{"xyz"} },
+		"missing typed config": func(value *Configuration) { value.Services[0].VLESSReality = nil },
+		"invalid target": func(value *Configuration) {
+			value.Services[0].VLESSReality.Target = "127.0.0.1:443"
+		},
+		"invalid key": func(value *Configuration) {
+			value.Services[0].VLESSReality.PrivateKey = "secret"
+		},
+		"invalid short ID": func(value *Configuration) {
+			value.Services[0].VLESSReality.ShortIDs = []string{"xyz"}
+		},
 		"conflicting listener": func(value *Configuration) { value.Services[1].Port = value.Services[0].Port },
 		"conflicting API port": func(value *Configuration) { value.Services[0].Port = value.APIPort },
 		"too many services": func(value *Configuration) {
@@ -174,25 +141,27 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 	main, mainExists := merged.FindService("reality-main")
 	backup, backupExists := merged.FindService("reality-backup")
 	if merged.CredentialSeed != value.CredentialSeed || !mainExists || !backupExists ||
-		main.PrivateKey != value.Services[0].PrivateKey || main.ShortIDs[0] != value.Services[0].ShortIDs[0] ||
+		main.VLESSReality.PrivateKey != value.Services[0].VLESSReality.PrivateKey ||
+		main.VLESSReality.ShortIDs[0] != value.Services[0].VLESSReality.ShortIDs[0] ||
 		main.DisplayName != "Updated Main" {
 		t.Fatalf("MergeEditable() changed protected existing configuration: %+v", merged)
 	}
-	if backup.PrivateKey == "" || backup.PrivateKey == value.Services[0].PrivateKey ||
-		backup.ShortIDs[0] == value.Services[0].ShortIDs[0] {
+	if backup.VLESSReality.PrivateKey == "" || backup.VLESSReality.PrivateKey == value.Services[0].VLESSReality.PrivateKey ||
+		backup.VLESSReality.ShortIDs[0] == value.Services[0].VLESSReality.ShortIDs[0] {
 		t.Fatalf("MergeEditable() did not generate independent service secrets: %+v", backup)
 	}
 	created, err := NewFromEditable(editable)
 	createdMain, createdMainExists := created.FindService("reality-main")
 	if err != nil || created.CredentialSeed == "" || created.CredentialSeed == value.CredentialSeed ||
-		len(created.Services) != 2 || !createdMainExists || createdMain.PrivateKey == value.Services[0].PrivateKey {
+		len(created.Services) != 2 || !createdMainExists ||
+		createdMain.VLESSReality.PrivateKey == value.Services[0].VLESSReality.PrivateKey {
 		t.Fatalf("NewFromEditable() = %+v, %v", created, err)
 	}
 	deleted, err := MergeEditable(merged, EditableConfiguration{
 		XrayVersion: editable.XrayVersion, APIPort: editable.APIPort, Services: editable.Services[1:],
 	})
 	if err != nil || len(deleted.Services) != 1 || deleted.Services[0].ServiceID != "reality-backup" ||
-		deleted.Services[0].PrivateKey != backup.PrivateKey {
+		deleted.Services[0].VLESSReality.PrivateKey != backup.VLESSReality.PrivateKey {
 		t.Fatalf("MergeEditable(delete) = %+v, %v", deleted, err)
 	}
 }
@@ -201,13 +170,17 @@ func testEditableServices() []EditableService {
 	return []EditableService{
 		{
 			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
-			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 443, PublicPort: 443,
+			VLESSReality: &EditableVLESSReality{
+				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			},
 		},
 		{
 			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443, Target: "www.cloudflare.com:443",
-			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443,
+			VLESSReality: &EditableVLESSReality{
+				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			},
 		},
 	}
 }

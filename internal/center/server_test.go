@@ -102,6 +102,11 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	if _, err := server.Activate(t.Context(), &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}); err != nil {
 		t.Fatal(err)
 	}
+	serviceTypes, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "service-types.list", Json: []byte(`{}`)})
+	if err != nil || !json.Valid(serviceTypes.GetJson()) ||
+		!jsonContainsValue(serviceTypes.GetJson(), config.ServiceTypeVLESSReality) {
+		t.Fatalf("service-types.list = %s, %v", serviceTypes.GetJson(), err)
+	}
 	nodes, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "nodes.list", Json: []byte(`{}`)})
 	if err != nil || !json.Valid(nodes.GetJson()) {
 		t.Fatalf("nodes.list = %s, %v", nodes.GetJson(), err)
@@ -129,7 +134,7 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	}
 	storedConfiguration, err := config.Decode(host.configured.Json)
 	if err != nil || storedConfiguration.CredentialSeed == "" || len(storedConfiguration.Services) != 2 ||
-		storedConfiguration.Services[0].PrivateKey == "" || len(host.services.Services) != 2 {
+		storedConfiguration.Services[0].VLESSReality.PrivateKey == "" || len(host.services.Services) != 2 {
 		t.Fatalf("stored configuration = %+v, %v", storedConfiguration, err)
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
@@ -148,11 +153,39 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	}
 	updated, err := config.Decode(host.configured.Json)
 	if err != nil || updated.CredentialSeed != storedConfiguration.CredentialSeed ||
-		updated.Services[0].PrivateKey != storedConfiguration.Services[0].PrivateKey ||
-		updated.Services[1].PrivateKey != storedConfiguration.Services[1].PrivateKey ||
+		updated.Services[0].VLESSReality.PrivateKey != storedConfiguration.Services[0].VLESSReality.PrivateKey ||
+		updated.Services[1].VLESSReality.PrivateKey != storedConfiguration.Services[1].VLESSReality.PrivateKey ||
 		updated.Services[0].DisplayName != "Updated VLESS" {
 		t.Fatalf("updated configuration = %+v, %v", updated, err)
 	}
+}
+
+func jsonContainsValue(raw []byte, expected string) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	var contains func(any) bool
+	contains = func(candidate any) bool {
+		switch typed := candidate.(type) {
+		case string:
+			return typed == expected
+		case map[string]any:
+			for _, child := range typed {
+				if contains(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if contains(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return contains(value)
 }
 
 func jsonContainsKey(raw []byte, key string) bool {
@@ -220,13 +253,17 @@ func testConfigurationJSON(t *testing.T) json.RawMessage {
 	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
-			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 443, PublicPort: 443,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443, Target: "www.cloudflare.com:443",
-			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			},
 		},
 	})
 	if err != nil {

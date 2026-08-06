@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/Relayward/relayward-plugin-xray/internal/xrayconfig"
 	"github.com/Relayward/relayward-plugin-xray/internal/xrayrelease"
 )
 
@@ -131,7 +132,7 @@ func TestManagerIgnoresLegacyConfigurationCacheKeyDuringUpgrade(t *testing.T) {
 	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
 		t.Fatalf("Apply() with legacy cache error = %v", err)
 	}
-	raw, err := configuration.XrayJSON()
+	raw, err := xrayconfig.Render(configuration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,13 +312,17 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	configuration, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
-			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 443, PublicPort: 443,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443, Target: "www.cloudflare.com:443",
-			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			},
 		},
 	})
 	if err != nil {
@@ -422,8 +427,10 @@ func testConfigurationValue(t *testing.T, listen string) config.Configuration {
 	t.Helper()
 	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
-		Listen: listen, Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
-		ServerName: "www.microsoft.com", Fingerprint: "chrome",
+		Listen: listen, Port: 443, PublicPort: 443,
+		VLESSReality: &config.EditableVLESSReality{
+			Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+		},
 	}})
 	if err != nil {
 		t.Fatal(err)

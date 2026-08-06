@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/Relayward/relayward-plugin-xray/internal/xrayconfig"
 	"github.com/Relayward/relayward-plugin-xray/internal/xrayrelease"
 )
 
@@ -111,7 +112,7 @@ func (manager *Manager) Validate(ctx context.Context, configuration config.Confi
 	if err != nil {
 		return err
 	}
-	raw, err := configuration.XrayJSON()
+	raw, err := xrayconfig.Render(configuration)
 	if err != nil {
 		return err
 	}
@@ -141,7 +142,7 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 	if err != nil {
 		return err
 	}
-	raw, err := configuration.XrayJSON()
+	raw, err := xrayconfig.Render(configuration)
 	if err != nil {
 		return err
 	}

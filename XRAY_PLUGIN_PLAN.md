@@ -17,7 +17,7 @@ All stages target Linux AMD64 and official stable Xray releases. There is no com
 
 ## Stage 1: Multi-Service VLESS REALITY Foundation
 
-Status: implemented and locally validated.
+Status: implemented and validated on Debian/systemd and Alpine/OpenRC test nodes.
 
 - Manage zero to 64 independent `vless-reality` services in `services[]`.
 - Generate an independent REALITY private key and short ID for every new service.
@@ -32,7 +32,7 @@ Acceptance requires two enabled services on one node to start simultaneously, ac
 
 ## Stage 2: Service-Type Contract
 
-Status: planned.
+Status: implemented and locally validated.
 
 - Define the internal typed configuration boundary required for service types with different fields while preserving the common `service_id`, display name, enabled state, listener, and public endpoint semantics.
 - Split shared service validation from type-specific Xray JSON and subscription rendering.

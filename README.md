@@ -41,18 +41,22 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
       "listen": "0.0.0.0",
       "port": 443,
       "public_port": 443,
-      "target": "www.cloudflare.com:443",
-      "server_names": ["www.cloudflare.com"],
-      "private_key": "base64url-encoded-X25519-private-key",
-      "short_ids": ["0123456789abcdef"],
-      "flow": "xtls-rprx-vision",
-      "fingerprint": "chrome"
+      "vless_reality": {
+        "target": "addons.mozilla.org:443",
+        "server_names": ["addons.mozilla.org"],
+        "private_key": "base64url-encoded-X25519-private-key",
+        "short_ids": ["0123456789abcdef"],
+        "flow": "xtls-rprx-vision",
+        "fingerprint": "chrome"
+      }
     }
   ]
 }
 ```
 
-Each service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Services are stored in service-ID order. The administration page generates a node credential seed and independent REALITY secrets for each new service. Editing a service preserves its secrets by service ID; deleting a service removes them. The retired single-service `vless_reality` shape is intentionally unsupported.
+Each service keeps listener identity and public endpoint fields at the common service level. Protocol-specific fields are stored in the matching typed configuration object, currently `vless_reality`. The service-type catalog declares runtime and subscription capabilities, and conformance tests require every registered type to implement each declared layer before it can be added.
+
+Each service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Services are stored in service-ID order. The administration page generates a node credential seed and independent REALITY secrets for each new service. Editing a service preserves its secrets by service ID; deleting a service removes them. The retired single-service shape and the former flat multi-service REALITY fields are intentionally unsupported.
 
 Unknown fields, prerelease Xray versions, duplicate service IDs, conflicting listeners, non-domain REALITY targets, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
 

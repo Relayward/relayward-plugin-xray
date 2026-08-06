@@ -58,6 +58,10 @@ type runtimeAPI interface {
 	close()
 }
 
+func SupportsServiceType(serviceType string) bool {
+	return serviceType == config.ServiceTypeVLESSReality
+}
+
 func connectXrayAPI(parent context.Context, configuration config.Configuration) (*xrayAPI, error) {
 	ctx, cancel := context.WithTimeout(parent, xrayAPITimeout)
 	defer cancel()
@@ -326,13 +330,18 @@ func credentialFor(configuration config.Configuration, authorizationID, serviceI
 	if !exists {
 		return runtimeCredential{}, ErrUnsupportedService
 	}
-	id, err := config.DeriveCredential(configuration.CredentialSeed, authorizationID, serviceID)
-	if err != nil {
-		return runtimeCredential{}, err
+	switch service.Type {
+	case config.ServiceTypeVLESSReality:
+		id, err := config.DeriveCredential(configuration.CredentialSeed, authorizationID, serviceID)
+		if err != nil {
+			return runtimeCredential{}, err
+		}
+		return runtimeCredential{
+			id: id, email: config.UserEmail(authorizationID, serviceID), flow: service.VLESSReality.Flow,
+		}, nil
+	default:
+		return runtimeCredential{}, ErrUnsupportedService
 	}
-	return runtimeCredential{
-		id: id, email: config.UserEmail(authorizationID, serviceID), flow: service.Flow,
-	}, nil
 }
 
 type runtimeCredential struct {

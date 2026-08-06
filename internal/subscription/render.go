@@ -17,6 +17,17 @@ import (
 
 var publicDomainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$`)
 
+func SupportsServiceType(serviceType string) bool {
+	return serviceType == config.ServiceTypeVLESSReality
+}
+
+func SupportedFormats(serviceType string) []string {
+	if !SupportsServiceType(serviceType) {
+		return nil
+	}
+	return []string{"base64", "mihomo", "sing-box"}
+}
+
 func Render(configuration config.Configuration, request *centerpluginv1.RenderSubscriptionRequest) (*centerpluginv1.RenderSubscriptionResponse, error) {
 	if err := centerpluginv1.ValidateRenderSubscriptionRequest(request); err != nil {
 		return nil, err
@@ -39,48 +50,70 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 		if !service.Enabled {
 			return nil, errors.New("subscription requests a disabled Xray service")
 		}
-		publicKey, err := config.RealityPublicKey(service.PrivateKey)
+		contribution, err := renderService(configuration, service, binding, host, request.AuthorizationId)
 		if err != nil {
 			return nil, err
 		}
-		serverName := service.ServerNames[0]
-		shortID := service.ShortIDs[0]
-		credential, err := config.DeriveCredential(configuration.CredentialSeed, request.AuthorizationId, binding.ServiceId)
-		if err != nil {
-			return nil, err
-		}
-		uri := vlessURI(host, service.PublicPort, credential, binding.DisplayName, service.Flow,
-			service.Fingerprint, serverName, publicKey, shortID)
-		mihomo, err := json.Marshal(map[string]any{
-			"name": binding.DisplayName, "type": "vless", "server": host, "port": service.PublicPort,
-			"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": service.Flow,
-			"servername": serverName, "client-fingerprint": service.Fingerprint,
-			"reality-opts": map[string]any{"public-key": publicKey, "short-id": shortID},
-		})
-		if err != nil {
-			return nil, err
-		}
-		singBox, err := json.Marshal(map[string]any{
-			"type": "vless", "tag": binding.DisplayName, "server": host, "server_port": service.PublicPort,
-			"uuid": credential, "flow": service.Flow,
-			"tls": map[string]any{
-				"enabled": true, "server_name": serverName,
-				"utls":    map[string]any{"enabled": true, "fingerprint": service.Fingerprint},
-				"reality": map[string]any{"enabled": true, "public_key": publicKey, "short_id": shortID},
-			},
-		})
-		if err != nil {
-			return nil, err
-		}
-		response.Services[index] = &centerpluginv1.SubscriptionServiceContribution{
-			ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
-			Uris: []string{uri}, MihomoProxiesJson: [][]byte{mihomo}, SingBoxOutboundsJson: [][]byte{singBox},
-		}
+		response.Services[index] = contribution
 	}
 	if err := centerpluginv1.ValidateRenderSubscriptionResponse(request, response); err != nil {
 		return nil, err
 	}
 	return response, nil
+}
+
+func renderService(configuration config.Configuration, service config.Service,
+	binding *centerpluginv1.SubscriptionServiceBinding, host, authorizationID string,
+) (*centerpluginv1.SubscriptionServiceContribution, error) {
+	switch service.Type {
+	case config.ServiceTypeVLESSReality:
+		return renderVLESSReality(configuration, service, binding, host, authorizationID)
+	default:
+		return nil, errors.New("subscription requests an unsupported Xray service type")
+	}
+}
+
+func renderVLESSReality(configuration config.Configuration, service config.Service,
+	binding *centerpluginv1.SubscriptionServiceBinding, host, authorizationID string,
+) (*centerpluginv1.SubscriptionServiceContribution, error) {
+	reality := service.VLESSReality
+	publicKey, err := config.RealityPublicKey(reality.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	serverName := reality.ServerNames[0]
+	shortID := reality.ShortIDs[0]
+	credential, err := config.DeriveCredential(configuration.CredentialSeed, authorizationID, binding.ServiceId)
+	if err != nil {
+		return nil, err
+	}
+	uri := vlessURI(host, service.PublicPort, credential, binding.DisplayName, reality.Flow,
+		reality.Fingerprint, serverName, publicKey, shortID)
+	mihomo, err := json.Marshal(map[string]any{
+		"name": binding.DisplayName, "type": "vless", "server": host, "port": service.PublicPort,
+		"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": reality.Flow,
+		"servername": serverName, "client-fingerprint": reality.Fingerprint,
+		"reality-opts": map[string]any{"public-key": publicKey, "short-id": shortID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	singBox, err := json.Marshal(map[string]any{
+		"type": "vless", "tag": binding.DisplayName, "server": host, "server_port": service.PublicPort,
+		"uuid": credential, "flow": reality.Flow,
+		"tls": map[string]any{
+			"enabled": true, "server_name": serverName,
+			"utls":    map[string]any{"enabled": true, "fingerprint": reality.Fingerprint},
+			"reality": map[string]any{"enabled": true, "public_key": publicKey, "short_id": shortID},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &centerpluginv1.SubscriptionServiceContribution{
+		ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
+		Uris: []string{uri}, MihomoProxiesJson: [][]byte{mihomo}, SingBoxOutboundsJson: [][]byte{singBox},
+	}, nil
 }
 
 func vlessURI(host string, port uint16, credential, displayName, flow, fingerprint, serverName, publicKey, shortID string) string {

@@ -26,13 +26,17 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	configuration, err := config.NewConfiguration("26.3.27", apiPort, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "127.0.0.1", Port: mainPort, PublicPort: mainPort, Target: "www.cloudflare.com:443",
-			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			Listen: "127.0.0.1", Port: mainPort, PublicPort: mainPort,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "127.0.0.1", Port: backupPort, PublicPort: backupPort, Target: "www.microsoft.com:443",
-			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			Listen: "127.0.0.1", Port: backupPort, PublicPort: backupPort,
+			VLESSReality: &config.EditableVLESSReality{
+				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
+			},
 		},
 	})
 	if err != nil {

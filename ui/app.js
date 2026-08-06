@@ -66,6 +66,7 @@ const messages = {
 
 let locale = "en";
 let nodes = [];
+let serviceTypes = [];
 let selectedNode;
 let stored;
 let services = [];
@@ -149,6 +150,7 @@ function numberValue(id) {
 }
 
 function nextServiceDefaults() {
+  const serviceType = serviceTypes[0]?.id ?? "vless-reality";
   let suffix = services.length === 0 ? 1 : 2;
   let serviceID = services.length === 0 ? "vless-reality" : `vless-reality-${suffix}`;
   while (services.some((service) => service.service_id === serviceID)) {
@@ -158,21 +160,26 @@ function nextServiceDefaults() {
   let port = services.length === 0 ? 443 : 8443;
   while (services.some((service) => service.port === port) && port < 65535) port += 1;
   return {
-    type: "vless-reality",
+    type: serviceType,
     enabled: true,
     service_id: serviceID,
     display_name: services.length === 0 ? "VLESS Reality" : `VLESS Reality ${services.length + 1}`,
     listen: "0.0.0.0",
     port,
     public_port: port,
-    target: "www.cloudflare.com:443",
-    server_name: "www.cloudflare.com",
-    fingerprint: "chrome",
+    vless_reality: {
+      target: "www.cloudflare.com:443",
+      server_name: "www.cloudflare.com",
+      fingerprint: "chrome",
+    },
   };
 }
 
 function cloneServices(values) {
-  return values.map((service) => ({ ...service }));
+  return values.map((service) => ({
+    ...service,
+    vless_reality: service.vless_reality == null ? undefined : { ...service.vless_reality },
+  }));
 }
 
 function populateConfiguration() {
@@ -276,6 +283,12 @@ async function refreshNodes() {
   }
 }
 
+async function loadServiceTypes() {
+  const response = await client.rpc("service-types.list", {});
+  serviceTypes = Array.isArray(response.service_types) ? response.service_types : [];
+  if (serviceTypes.length === 0) throw new Error(text("The request could not be completed."));
+}
+
 function configurationForSave() {
   return {
     xray_version: elements.xrayVersion.value.trim(),
@@ -308,16 +321,19 @@ async function saveConfiguration(event) {
 }
 
 function populateServiceDialog(service) {
+  const reality = service.vless_reality ?? {};
   elements.serviceEnabled.checked = service.enabled;
   elements.serviceId.value = service.service_id;
   elements.serviceId.disabled = editingServiceID != null;
   elements.displayName.value = service.display_name;
-  elements.fingerprint.value = service.fingerprint;
+  elements.serviceTypeOutput.textContent = serviceTypes.find((candidate) => candidate.id === service.type)?.display_name ?? service.type;
+  elements.serviceTypeOutput.dataset.type = service.type;
+  elements.fingerprint.value = reality.fingerprint ?? "chrome";
   elements.listenAddress.value = service.listen;
   elements.listenPort.value = String(service.port);
   elements.publicPort.value = String(service.public_port);
-  elements.realityTarget.value = service.target;
-  elements.serverName.value = service.server_name;
+	elements.realityTarget.value = reality.target ?? "";
+	elements.serverName.value = reality.server_name ?? "";
   elements.serviceId.setCustomValidity("");
 }
 
@@ -341,17 +357,20 @@ function closeServiceDialog() {
 }
 
 function serviceFromDialog() {
+  const type = elements.serviceTypeOutput.dataset.type || serviceTypes[0]?.id || "vless-reality";
   return {
-    type: "vless-reality",
+    type,
     enabled: elements.serviceEnabled.checked,
     service_id: elements.serviceId.value.trim(),
     display_name: elements.displayName.value.trim(),
     listen: elements.listenAddress.value.trim(),
     port: numberValue("listen-port"),
     public_port: numberValue("public-port"),
-    target: elements.realityTarget.value.trim(),
-    server_name: elements.serverName.value.trim(),
-    fingerprint: elements.fingerprint.value,
+    vless_reality: {
+      target: elements.realityTarget.value.trim(),
+      server_name: elements.serverName.value.trim(),
+      fingerprint: elements.fingerprint.value,
+    },
   };
 }
 
@@ -425,6 +444,7 @@ try {
   locale = context.locale;
   document.documentElement.dataset.theme = context.theme;
   translatePage();
+  await loadServiceTypes();
   await refreshNodes();
 } catch (cause) {
   showError(cause);
