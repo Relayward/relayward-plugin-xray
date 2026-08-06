@@ -2,7 +2,9 @@ package xrayruntime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -104,6 +106,41 @@ func TestManagerRejectsInvalidXrayConfiguration(t *testing.T) {
 	configuration := testConfigurationValue(t, "127.0.0.3")
 	if err := manager.Validate(context.Background(), configuration); !errors.Is(err, ErrConfigurationRejected) {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestManagerIgnoresLegacyConfigurationCacheKeyDuringUpgrade(t *testing.T) {
+	t.Parallel()
+	manager := testManager(t)
+	directory := filepath.Join(manager.dataDirectory, "xray", "configurations")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(directory, digestA+".json")
+	if err := os.WriteFile(legacyPath, []byte(`{"legacy":true}`), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	configuration := testConfigurationValue(t, "0.0.0.0")
+	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
+		t.Fatalf("Apply() with legacy cache error = %v", err)
+	}
+	raw, err := configuration.XrayJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedDigest := sha256.Sum256(raw)
+	expectedPath := filepath.Join(directory, fmt.Sprintf("%x.json", generatedDigest))
+	actualPath := ""
+	if manager.running != nil {
+		actualPath = manager.running.configPath
+	}
+	if actualPath != expectedPath || actualPath == legacyPath {
+		t.Fatalf("running configuration path = %q, want %q", actualPath, expectedPath)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 

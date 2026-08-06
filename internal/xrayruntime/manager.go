@@ -4,6 +4,7 @@ package xrayruntime
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -125,6 +126,9 @@ func (manager *Manager) Validate(ctx context.Context, configuration config.Confi
 func (manager *Manager) Apply(ctx context.Context, generation uint64, digest string, configuration config.Configuration) error {
 	manager.operation.Lock()
 	defer manager.operation.Unlock()
+	if !sha256Pattern.MatchString(digest) {
+		return errors.New("invalid Xray configuration digest")
+	}
 	candidateEpoch := manager.epoch
 	if candidateEpoch == "" {
 		var err error
@@ -149,7 +153,7 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 	if err := testConfiguration(ctx, manager.dataDirectory, installation, configPath); err != nil {
 		return err
 	}
-	stablePath, err := manager.commitConfiguration(digest, configPath)
+	stablePath, err := manager.commitConfiguration(configPath)
 	if err != nil {
 		return err
 	}
@@ -345,11 +349,13 @@ func (manager *Manager) writeTemporaryConfiguration(raw []byte) (string, func(),
 	return path, cleanup, nil
 }
 
-func (manager *Manager) commitConfiguration(digest, temporaryPath string) (string, error) {
-	if !sha256Pattern.MatchString(digest) {
-		return "", errors.New("invalid Xray configuration digest")
+func (manager *Manager) commitConfiguration(temporaryPath string) (string, error) {
+	candidate, err := os.ReadFile(temporaryPath)
+	if err != nil {
+		return "", fmt.Errorf("read candidate Xray configuration: %w", err)
 	}
-	finalPath := filepath.Join(filepath.Dir(temporaryPath), digest+".json")
+	digest := sha256.Sum256(candidate)
+	finalPath := filepath.Join(filepath.Dir(temporaryPath), hex.EncodeToString(digest[:])+".json")
 	if info, err := os.Lstat(finalPath); err == nil {
 		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o400 {
 			return "", errors.New("stored Xray configuration is not a private regular file")
@@ -358,12 +364,8 @@ func (manager *Manager) commitConfiguration(digest, temporaryPath string) (strin
 		if readErr != nil {
 			return "", fmt.Errorf("read stored Xray configuration: %w", readErr)
 		}
-		candidate, readErr := os.ReadFile(temporaryPath)
-		if readErr != nil {
-			return "", fmt.Errorf("read candidate Xray configuration: %w", readErr)
-		}
 		if string(existing) != string(candidate) {
-			return "", errors.New("stored Xray configuration does not match its digest")
+			return "", errors.New("stored Xray configuration does not match its content digest")
 		}
 		return finalPath, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
