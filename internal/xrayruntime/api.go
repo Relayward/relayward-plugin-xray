@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/protobuf/protoadapt"
 
 	"github.com/Relayward/relayward-plugin-xray/internal/config"
+	"github.com/Relayward/relayward-plugin-xray/internal/xrayconfig"
 )
 
 const xrayAPITimeout = 3 * time.Second
@@ -54,7 +56,7 @@ type runtimeAPI interface {
 	removeUser(context.Context, string, string) error
 	queryStats(context.Context) ([]trafficStat, error)
 	queryOnlineIPs(context.Context, string) (map[string]int64, error)
-	replaceBlockRules(context.Context, []blockRule) error
+	replaceRoutingRules(context.Context, string, []xrayconfig.CompiledRoutingRule) error
 	close()
 }
 
@@ -245,7 +247,11 @@ func (manager *Manager) ApplyDynamicBlocks(ctx context.Context, policyGeneration
 			return nil
 		}
 	}
-	if err := process.api.replaceBlockRules(ctx, runtimeBlockRules(blocks)); err != nil {
+	rules, err := xrayconfig.CompileRoutingRules(spec.configuration, runtimeBlockRules(blocks))
+	if err != nil {
+		return err
+	}
+	if err := process.api.replaceRoutingRules(ctx, spec.configuration.XrayVersion, rules); err != nil {
 		return err
 	}
 	manager.blocks = append([]DynamicBlock(nil), blocks...)
@@ -268,15 +274,19 @@ func (manager *Manager) restoreBlockRules(ctx context.Context, configuration con
 	if len(blocks) == 0 {
 		return nil
 	}
-	return api.replaceBlockRules(ctx, runtimeBlockRules(blocks))
+	rules, err := xrayconfig.CompileRoutingRules(configuration, runtimeBlockRules(blocks))
+	if err != nil {
+		return err
+	}
+	return api.replaceRoutingRules(ctx, configuration.XrayVersion, rules)
 }
 
-func runtimeBlockRules(blocks []DynamicBlock) []blockRule {
-	values := make([]blockRule, len(blocks))
+func runtimeBlockRules(blocks []DynamicBlock) []xrayconfig.DynamicBlockRule {
+	values := make([]xrayconfig.DynamicBlockRule, len(blocks))
 	for index, block := range blocks {
-		values[index] = blockRule{
-			email:      config.UserEmail(block.AuthorizationID, block.ServiceID),
-			inboundTag: block.ServiceID, sourceIP: block.SourceIP,
+		values[index] = xrayconfig.DynamicBlockRule{
+			UserEmail:  config.UserEmail(block.AuthorizationID, block.ServiceID),
+			InboundTag: block.ServiceID, SourceIP: block.SourceIP,
 		}
 	}
 	return values
@@ -507,34 +517,8 @@ func (api *xrayAPI) queryOnlineIPs(parent context.Context, email string) (map[st
 	return values, nil
 }
 
-type blockRule struct {
-	email      string
-	inboundTag string
-	sourceIP   string
-}
-
-func (api *xrayAPI) replaceBlockRules(parent context.Context, blocks []blockRule) error {
-	rules := make([]*routingRule, 0, len(blocks)+1)
-	rules = append(rules, &routingRule{
-		Tag: "relayward-api", RuleTag: "relayward-api", InboundTag: []string{"relayward-api"},
-	})
-	for index, block := range blocks {
-		ip := net.ParseIP(block.sourceIP)
-		if ip == nil {
-			return errors.New("encode Xray block source IP")
-		}
-		if ipv4 := ip.To4(); ipv4 != nil {
-			ip = ipv4
-		} else {
-			ip = ip.To16()
-		}
-		rules = append(rules, &routingRule{
-			Tag: "blocked", RuleTag: "relayward-block-" + strconv.Itoa(index+1),
-			UserEmail: []string{block.email}, InboundTag: []string{block.inboundTag},
-			SourceGeoIP: []*geoIP{{CIDR: []*cidr{{IP: []byte(ip), Prefix: uint32(len(ip) * 8)}}}},
-		})
-	}
-	encoded, err := marshalLegacy(&routerConfig{Rules: rules})
+func (api *xrayAPI) replaceRoutingRules(parent context.Context, version string, rules []xrayconfig.CompiledRoutingRule) error {
+	encoded, err := marshalRoutingRules(version, rules)
 	if err != nil {
 		return errors.New("encode Xray routing rules")
 	}
@@ -547,6 +531,94 @@ func (api *xrayAPI) replaceBlockRules(parent context.Context, blocks []blockRule
 		return errors.New("replace Xray routing rules")
 	}
 	return nil
+}
+
+func marshalRoutingRules(version string, rules []xrayconfig.CompiledRoutingRule) ([]byte, error) {
+	if usesGeodataRoutingRules(version) {
+		values := make([]*geodataRoutingRule, len(rules))
+		for index, rule := range rules {
+			values[index] = newGeodataRoutingRule(rule)
+		}
+		return marshalLegacy(&geodataRouterConfig{Rules: values})
+	}
+	values := make([]*routingRule, len(rules))
+	for index, rule := range rules {
+		values[index] = newLegacyRoutingRule(rule)
+	}
+	return marshalLegacy(&routerConfig{Rules: values})
+}
+
+func usesGeodataRoutingRules(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	values := [3]int{}
+	for index, part := range parts {
+		parsed, err := strconv.Atoi(part)
+		if err != nil {
+			return false
+		}
+		values[index] = parsed
+	}
+	cutoff := [3]int{26, 7, 11}
+	for index := range values {
+		if values[index] != cutoff[index] {
+			return values[index] > cutoff[index]
+		}
+	}
+	return true
+}
+
+func newLegacyRoutingRule(rule xrayconfig.CompiledRoutingRule) *routingRule {
+	value := &routingRule{
+		Tag: rule.OutboundTag, RuleTag: rule.RuleTag,
+		UserEmail: append([]string(nil), rule.UserEmails...), InboundTag: append([]string(nil), rule.InboundTags...),
+		Protocol: append([]string(nil), rule.Protocols...),
+	}
+	for _, domain := range rule.Domains {
+		value.Domain = append(value.Domain, &routingDomain{Type: 2, Value: domain})
+	}
+	value.GeoIP = legacyGeoIPs(rule.DestinationCIDRs)
+	value.SourceGeoIP = legacyGeoIPs(rule.SourceCIDRs)
+	return value
+}
+
+func newGeodataRoutingRule(rule xrayconfig.CompiledRoutingRule) *geodataRoutingRule {
+	value := &geodataRoutingRule{
+		Tag: rule.OutboundTag, RuleTag: rule.RuleTag,
+		UserEmail: append([]string(nil), rule.UserEmails...), InboundTag: append([]string(nil), rule.InboundTags...),
+		Protocol: append([]string(nil), rule.Protocols...),
+	}
+	for _, domain := range rule.Domains {
+		value.Domain = append(value.Domain, &domainRule{Custom: &routingDomain{Type: 2, Value: domain}})
+	}
+	value.IP = geodataIPRules(rule.DestinationCIDRs)
+	value.SourceIP = geodataIPRules(rule.SourceCIDRs)
+	return value
+}
+
+func legacyGeoIPs(prefixes []netip.Prefix) []*geoIP {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	value := &geoIP{CIDR: make([]*cidr, len(prefixes))}
+	for index, prefix := range prefixes {
+		value.CIDR[index] = routingCIDR(prefix)
+	}
+	return []*geoIP{value}
+}
+
+func geodataIPRules(prefixes []netip.Prefix) []*ipRule {
+	values := make([]*ipRule, len(prefixes))
+	for index, prefix := range prefixes {
+		values[index] = &ipRule{Custom: &cidrRule{CIDR: routingCIDR(prefix)}}
+	}
+	return values
+}
+
+func routingCIDR(prefix netip.Prefix) *cidr {
+	return &cidr{IP: append([]byte(nil), prefix.Addr().AsSlice()...), Prefix: uint32(prefix.Bits())}
 }
 
 func marshalLegacy(message protoadapt.MessageV1) ([]byte, error) {
@@ -612,11 +684,46 @@ type routerConfig struct {
 }
 
 type routingRule struct {
-	Tag         string   `protobuf:"bytes,1,opt,name=tag,proto3"`
-	UserEmail   []string `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
-	InboundTag  []string `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
-	SourceGeoIP []*geoIP `protobuf:"bytes,11,rep,name=source_geoip,json=sourceGeoip,proto3"`
-	RuleTag     string   `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+	Tag         string           `protobuf:"bytes,1,opt,name=tag,proto3"`
+	Domain      []*routingDomain `protobuf:"bytes,2,rep,name=domain,proto3"`
+	UserEmail   []string         `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
+	InboundTag  []string         `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
+	Protocol    []string         `protobuf:"bytes,9,rep,name=protocol,proto3"`
+	GeoIP       []*geoIP         `protobuf:"bytes,10,rep,name=geoip,proto3"`
+	SourceGeoIP []*geoIP         `protobuf:"bytes,11,rep,name=source_geoip,json=sourceGeoip,proto3"`
+	RuleTag     string           `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+}
+
+type geodataRouterConfig struct {
+	Rules []*geodataRoutingRule `protobuf:"bytes,2,rep,name=rule,proto3"`
+}
+
+type geodataRoutingRule struct {
+	Tag        string        `protobuf:"bytes,1,opt,name=tag,proto3"`
+	Domain     []*domainRule `protobuf:"bytes,2,rep,name=domain,proto3"`
+	UserEmail  []string      `protobuf:"bytes,7,rep,name=user_email,json=userEmail,proto3"`
+	InboundTag []string      `protobuf:"bytes,8,rep,name=inbound_tag,json=inboundTag,proto3"`
+	Protocol   []string      `protobuf:"bytes,9,rep,name=protocol,proto3"`
+	IP         []*ipRule     `protobuf:"bytes,10,rep,name=ip,proto3"`
+	SourceIP   []*ipRule     `protobuf:"bytes,11,rep,name=source_ip,json=sourceIp,proto3"`
+	RuleTag    string        `protobuf:"bytes,19,opt,name=rule_tag,json=ruleTag,proto3"`
+}
+
+type routingDomain struct {
+	Type  int32  `protobuf:"varint,1,opt,name=type,proto3"`
+	Value string `protobuf:"bytes,2,opt,name=value,proto3"`
+}
+
+type domainRule struct {
+	Custom *routingDomain `protobuf:"bytes,2,opt,name=custom,proto3"`
+}
+
+type ipRule struct {
+	Custom *cidrRule `protobuf:"bytes,2,opt,name=custom,proto3"`
+}
+
+type cidrRule struct {
+	CIDR *cidr `protobuf:"bytes,1,opt,name=cidr,proto3"`
 }
 
 type geoIP struct {
@@ -675,9 +782,27 @@ func (*getStatsOnlineIPListResponse) ProtoMessage()  {}
 func (value *routerConfig) Reset()                   { *value = routerConfig{} }
 func (*routerConfig) String() string                 { return "" }
 func (*routerConfig) ProtoMessage()                  {}
+func (value *geodataRouterConfig) Reset()            { *value = geodataRouterConfig{} }
+func (*geodataRouterConfig) String() string          { return "" }
+func (*geodataRouterConfig) ProtoMessage()           {}
 func (value *routingRule) Reset()                    { *value = routingRule{} }
 func (*routingRule) String() string                  { return "" }
 func (*routingRule) ProtoMessage()                   {}
+func (value *geodataRoutingRule) Reset()             { *value = geodataRoutingRule{} }
+func (*geodataRoutingRule) String() string           { return "" }
+func (*geodataRoutingRule) ProtoMessage()            {}
+func (value *routingDomain) Reset()                  { *value = routingDomain{} }
+func (*routingDomain) String() string                { return "" }
+func (*routingDomain) ProtoMessage()                 {}
+func (value *domainRule) Reset()                     { *value = domainRule{} }
+func (*domainRule) String() string                   { return "" }
+func (*domainRule) ProtoMessage()                    {}
+func (value *ipRule) Reset()                         { *value = ipRule{} }
+func (*ipRule) String() string                       { return "" }
+func (*ipRule) ProtoMessage()                        {}
+func (value *cidrRule) Reset()                       { *value = cidrRule{} }
+func (*cidrRule) String() string                     { return "" }
+func (*cidrRule) ProtoMessage()                      {}
 func (value *geoIP) Reset()                          { *value = geoIP{} }
 func (*geoIP) String() string                        { return "" }
 func (*geoIP) ProtoMessage()                         {}

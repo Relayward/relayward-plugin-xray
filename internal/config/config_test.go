@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -11,6 +12,7 @@ func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	value.Routing = testRoutingConfiguration()
 	raw, err := Encode(value)
 	if err != nil {
 		t.Fatal(err)
@@ -20,7 +22,8 @@ func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) 
 		t.Fatalf("Decode() error = %v", err)
 	}
 	if decoded.XrayVersion != "26.3.27" || len(decoded.Services) != 2 || decoded.Services[0].ServiceID != "reality-backup" ||
-		decoded.Services[1].ServiceID != "reality-main" {
+		decoded.Services[1].ServiceID != "reality-main" || len(decoded.Routing.Rules) != 2 ||
+		decoded.Routing.Rules[0].RuleID != "block-private" {
 		t.Fatalf("configuration = %+v", decoded)
 	}
 	first, err := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", "reality-main")
@@ -61,6 +64,7 @@ func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	value.Routing = testRoutingConfiguration()
 	valid, _ := Encode(value)
 	tests := map[string]func(*Configuration){
 		"missing version":      func(value *Configuration) { value.XrayVersion = "" },
@@ -131,7 +135,9 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 	if err != nil {
 		t.Fatal(err)
 	}
+	value.Routing = testRoutingConfiguration()
 	editable := Editable(value)
+	editable.Routing.Rules[0].DisplayName = "Updated route"
 	editable.Services[0].DisplayName = "Updated Main"
 	editable.Services = append(editable.Services, testEditableServices()[1])
 	merged, err := MergeEditable(value, editable)
@@ -143,7 +149,8 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 	if merged.CredentialSeed != value.CredentialSeed || !mainExists || !backupExists ||
 		main.VLESSReality.PrivateKey != value.Services[0].VLESSReality.PrivateKey ||
 		main.VLESSReality.ShortIDs[0] != value.Services[0].VLESSReality.ShortIDs[0] ||
-		main.DisplayName != "Updated Main" {
+		main.DisplayName != "Updated Main" || merged.Routing.Rules[0].DisplayName != "Updated route" ||
+		value.Routing.Rules[0].DisplayName != "Block private destinations" {
 		t.Fatalf("MergeEditable() changed protected existing configuration: %+v", merged)
 	}
 	if backup.VLESSReality.PrivateKey == "" || backup.VLESSReality.PrivateKey == value.Services[0].VLESSReality.PrivateKey ||
@@ -159,10 +166,56 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 	}
 	deleted, err := MergeEditable(merged, EditableConfiguration{
 		XrayVersion: editable.XrayVersion, APIPort: editable.APIPort, Services: editable.Services[1:],
+		Routing: editable.Routing,
 	})
 	if err != nil || len(deleted.Services) != 1 || deleted.Services[0].ServiceID != "reality-backup" ||
 		deleted.Services[0].VLESSReality.PrivateKey != backup.VLESSReality.PrivateKey {
 		t.Fatalf("MergeEditable(delete) = %+v, %v", deleted, err)
+	}
+}
+
+func TestRoutingValidationRejectsUnsafeOrAmbiguousRules(t *testing.T) {
+	t.Parallel()
+	valid, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid.Routing = testRoutingConfiguration()
+	tests := map[string]func(*Configuration){
+		"invalid ID":       func(value *Configuration) { value.Routing.Rules[0].RuleID = "Invalid ID" },
+		"duplicate ID":     func(value *Configuration) { value.Routing.Rules[1].RuleID = value.Routing.Rules[0].RuleID },
+		"missing match":    func(value *Configuration) { value.Routing.Rules[0].Domains = nil; value.Routing.Rules[0].IPCIDRs = nil },
+		"unknown action":   func(value *Configuration) { value.Routing.Rules[0].Action = "proxy" },
+		"uppercase domain": func(value *Configuration) { value.Routing.Rules[0].Domains[0] = "Example.com" },
+		"domain expression": func(value *Configuration) {
+			value.Routing.Rules[0].Domains[0] = "regexp:example.com"
+		},
+		"host IP":       func(value *Configuration) { value.Routing.Rules[0].IPCIDRs[0] = "192.0.2.1" },
+		"unmasked CIDR": func(value *Configuration) { value.Routing.Rules[0].IPCIDRs[0] = "192.0.2.1/24" },
+		"unknown protocol": func(value *Configuration) {
+			value.Routing.Rules[1].Protocols[0] = "ssh"
+		},
+		"duplicate value": func(value *Configuration) {
+			value.Routing.Rules[0].Domains = append(value.Routing.Rules[0].Domains, value.Routing.Rules[0].Domains[0])
+		},
+		"too many rules": func(value *Configuration) {
+			for len(value.Routing.Rules) <= MaximumRoutingRules {
+				rule := value.Routing.Rules[0]
+				rule.RuleID = fmt.Sprintf("rule-%d", len(value.Routing.Rules))
+				value.Routing.Rules = append(value.Routing.Rules, rule)
+			}
+		},
+	}
+	for name, mutate := range tests {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			candidate := clone(valid)
+			mutate(&candidate)
+			if err := Validate(candidate); err == nil {
+				t.Fatal("Validate() unexpectedly succeeded")
+			}
+		})
 	}
 }
 
@@ -183,4 +236,18 @@ func testEditableServices() []EditableService {
 			},
 		},
 	}
+}
+
+func testRoutingConfiguration() RoutingConfiguration {
+	return RoutingConfiguration{Rules: []RoutingRule{
+		{
+			RuleID: "block-private", DisplayName: "Block private destinations", Enabled: true,
+			Domains: []string{"internal.example.com"}, IPCIDRs: []string{"192.0.2.0/24"},
+			Action: RoutingActionBlocked,
+		},
+		{
+			RuleID: "allow-web", DisplayName: "Allow web protocols", Enabled: true,
+			Protocols: []string{"http", "tls"}, Action: RoutingActionDirect,
+		},
+	}}
 }

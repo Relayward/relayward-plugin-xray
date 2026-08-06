@@ -15,6 +15,11 @@ func Render(value config.Configuration) ([]byte, error) {
 	if err := config.Validate(value); err != nil {
 		return nil, err
 	}
+	routingRules, err := CompileRoutingRules(value, nil)
+	if err != nil {
+		return nil, err
+	}
+	sniffing := NeedsSniffing(value)
 	inbounds := []any{map[string]any{
 		"tag": "relayward-api", "listen": "127.0.0.1", "port": value.APIPort,
 		"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
@@ -23,7 +28,7 @@ func Render(value config.Configuration) ([]byte, error) {
 		if !service.Enabled {
 			continue
 		}
-		inbound, err := renderService(service)
+		inbound, err := renderService(service, sniffing)
 		if err != nil {
 			return nil, err
 		}
@@ -42,26 +47,24 @@ func Render(value config.Configuration) ([]byte, error) {
 		"policy": map[string]any{"levels": map[string]any{"0": map[string]any{
 			"statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true,
 		}}},
-		"routing": map[string]any{"rules": []any{map[string]any{
-			"type": "field", "inboundTag": []string{"relayward-api"}, "outboundTag": "relayward-api",
-		}}},
-		"stats": map[string]any{},
+		"routing": map[string]any{"rules": renderRoutingRules(routingRules)},
+		"stats":   map[string]any{},
 	}
 	return json.Marshal(result)
 }
 
-func renderService(service config.Service) (any, error) {
+func renderService(service config.Service, sniffing bool) (any, error) {
 	switch service.Type {
 	case config.ServiceTypeVLESSReality:
-		return renderVLESSReality(service), nil
+		return renderVLESSReality(service, sniffing), nil
 	default:
 		return nil, fmt.Errorf("unsupported Xray service type %q", service.Type)
 	}
 }
 
-func renderVLESSReality(service config.Service) any {
+func renderVLESSReality(service config.Service, sniffing bool) any {
 	reality := service.VLESSReality
-	return map[string]any{
+	inbound := map[string]any{
 		"tag": service.ServiceID, "listen": service.Listen, "port": service.Port, "protocol": "vless",
 		"settings": map[string]any{"clients": []any{}, "decryption": "none"},
 		"streamSettings": map[string]any{
@@ -72,4 +75,10 @@ func renderVLESSReality(service config.Service) any {
 			},
 		},
 	}
+	if sniffing {
+		inbound["sniffing"] = map[string]any{
+			"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true,
+		}
+	}
+	return inbound
 }

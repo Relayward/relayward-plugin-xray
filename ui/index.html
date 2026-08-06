@@ -27,6 +27,7 @@
       <section class="card" id="configuration-card" hidden>
         <div class="tabs" role="tablist" aria-label="Xray configuration">
           <button class="tab active" id="services-tab" type="button" role="tab" aria-selected="true" aria-controls="services-panel" data-panel="services-panel" data-i18n="Services">Services</button>
+          <button class="tab" id="routing-tab" type="button" role="tab" aria-selected="false" aria-controls="routing-panel" data-panel="routing-panel" data-i18n="Routing">Routing</button>
           <button class="tab" id="runtime-tab" type="button" role="tab" aria-selected="false" aria-controls="runtime-panel" data-panel="runtime-panel" data-i18n="Runtime">Runtime</button>
         </div>
 
@@ -43,6 +44,21 @@
             <div class="list-empty" id="service-list-empty" hidden>
               <strong data-i18n="No services configured">No services configured</strong>
               <span data-i18n="Add a service to publish an Xray inbound">Add a service to publish an Xray inbound</span>
+            </div>
+          </div>
+
+          <div class="panel" id="routing-panel" role="tabpanel" aria-labelledby="routing-tab" hidden>
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="Static routing rules">Static routing rules</h3>
+                <p data-i18n="Rules are evaluated from top to bottom after Relayward dynamic blocks">Rules are evaluated from top to bottom after Relayward dynamic blocks</p>
+              </div>
+              <button class="button button-primary" id="add-routing-rule-button" type="button" data-i18n="Add rule">Add rule</button>
+            </div>
+            <div class="routing-rule-list" id="routing-rule-list"></div>
+            <div class="list-empty" id="routing-rule-list-empty" hidden>
+              <strong data-i18n="No static routing rules">No static routing rules</strong>
+              <span data-i18n="Unmatched traffic uses the direct outbound">Unmatched traffic uses the direct outbound</span>
             </div>
           </div>
 
@@ -160,6 +176,82 @@
         <footer class="dialog-footer">
           <button class="button button-outline" id="cancel-service-button" type="button" data-i18n="Cancel">Cancel</button>
           <button class="button button-primary" type="submit" data-i18n="Apply service">Apply service</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="dialog" id="routing-rule-dialog" aria-labelledby="routing-rule-dialog-title">
+      <form class="dialog-content" id="routing-rule-form">
+        <header class="dialog-header">
+          <div>
+            <h3 id="routing-rule-dialog-title"></h3>
+            <p data-i18n="All populated match categories must match">All populated match categories must match</p>
+          </div>
+          <button class="icon-button" id="close-routing-rule-dialog" type="button" aria-label="Close" title="Close">&#215;</button>
+        </header>
+
+        <div class="dialog-body">
+          <section class="form-section" aria-labelledby="routing-identity-title">
+            <div class="section-heading">
+              <h4 id="routing-identity-title" data-i18n="Identity and action">Identity and action</h4>
+              <label class="switch-row" for="routing-rule-enabled">
+                <span data-i18n="Enabled">Enabled</span>
+                <input id="routing-rule-enabled" type="checkbox" role="switch" />
+              </label>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="routing-rule-id">
+                <span data-i18n="Rule ID">Rule ID</span>
+                <input id="routing-rule-id" pattern="[a-z0-9][a-z0-9._\-]{0,63}" maxlength="64" placeholder="block-private" required />
+              </label>
+              <label class="field" for="routing-rule-display-name">
+                <span data-i18n="Display name">Display name</span>
+                <input id="routing-rule-display-name" maxlength="100" required />
+              </label>
+              <label class="field" for="routing-rule-action">
+                <span data-i18n="Action">Action</span>
+                <select id="routing-rule-action">
+                  <option value="blocked" data-i18n="Block">Block</option>
+                  <option value="direct" data-i18n="Direct">Direct</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section" aria-labelledby="destination-match-title">
+            <div class="section-heading">
+              <h4 id="destination-match-title" data-i18n="Destination matches">Destination matches</h4>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="routing-domains">
+                <span data-i18n="Domain suffixes">Domain suffixes</span>
+                <textarea id="routing-domains" rows="5" maxlength="8192" placeholder="example.com" spellcheck="false"></textarea>
+                <small data-i18n="One lowercase domain per line; subdomains are included">One lowercase domain per line; subdomains are included</small>
+              </label>
+              <label class="field" for="routing-ip-cidrs">
+                <span data-i18n="IP CIDRs">IP CIDRs</span>
+                <textarea id="routing-ip-cidrs" rows="5" maxlength="8192" placeholder="192.0.2.0/24" spellcheck="false"></textarea>
+                <small data-i18n="One canonical IPv4 or IPv6 CIDR per line">One canonical IPv4 or IPv6 CIDR per line</small>
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section" aria-labelledby="protocol-match-title">
+            <div class="section-heading">
+              <h4 id="protocol-match-title" data-i18n="Sniffed protocols">Sniffed protocols</h4>
+            </div>
+            <div class="protocol-grid">
+              <label><input id="routing-protocol-http" type="checkbox" value="http" /> HTTP</label>
+              <label><input id="routing-protocol-tls" type="checkbox" value="tls" /> TLS</label>
+              <label><input id="routing-protocol-quic" type="checkbox" value="quic" /> QUIC</label>
+              <label><input id="routing-protocol-bittorrent" type="checkbox" value="bittorrent" /> BitTorrent</label>
+            </div>
+          </section>
+        </div>
+
+        <footer class="dialog-footer">
+          <button class="button button-outline" id="cancel-routing-rule-button" type="button" data-i18n="Cancel">Cancel</button>
+          <button class="button button-primary" type="submit" data-i18n="Apply rule">Apply rule</button>
         </footer>
       </form>
     </dialog>

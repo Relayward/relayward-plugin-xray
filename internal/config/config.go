@@ -24,6 +24,8 @@ const (
 	ServiceTypeVLESSReality = "vless-reality"
 	VLESSVisionFlow         = "xtls-rprx-vision"
 	MaximumServices         = 64
+	MaximumRoutingRules     = 128
+	MaximumRoutingValues    = 64
 )
 
 var (
@@ -31,10 +33,11 @@ var (
 )
 
 type Configuration struct {
-	XrayVersion    string    `json:"xray_version"`
-	APIPort        uint16    `json:"api_port"`
-	CredentialSeed string    `json:"credential_seed"`
-	Services       []Service `json:"services"`
+	XrayVersion    string               `json:"xray_version"`
+	APIPort        uint16               `json:"api_port"`
+	CredentialSeed string               `json:"credential_seed"`
+	Services       []Service            `json:"services"`
+	Routing        RoutingConfiguration `json:"routing"`
 }
 
 type Service struct {
@@ -49,9 +52,10 @@ type Service struct {
 }
 
 type EditableConfiguration struct {
-	XrayVersion string            `json:"xray_version"`
-	APIPort     uint16            `json:"api_port"`
-	Services    []EditableService `json:"services"`
+	XrayVersion string               `json:"xray_version"`
+	APIPort     uint16               `json:"api_port"`
+	Services    []EditableService    `json:"services"`
+	Routing     RoutingConfiguration `json:"routing"`
 }
 
 type EditableService struct {
@@ -74,7 +78,10 @@ func Editable(value Configuration) EditableConfiguration {
 			PublicPort: service.PublicPort, VLESSReality: editableVLESSReality(service.VLESSReality),
 		}
 	}
-	return EditableConfiguration{XrayVersion: value.XrayVersion, APIPort: value.APIPort, Services: services}
+	return EditableConfiguration{
+		XrayVersion: value.XrayVersion, APIPort: value.APIPort, Services: services,
+		Routing: cloneRouting(value.Routing),
+	}
 }
 
 func NewConfiguration(xrayVersion string, apiPort uint16, services []EditableService) (Configuration, error) {
@@ -116,6 +123,7 @@ func MergeEditable(configuration Configuration, value EditableConfiguration) (Co
 	configuration.APIPort = value.APIPort
 	sort.Slice(services, func(i, j int) bool { return services[i].ServiceID < services[j].ServiceID })
 	configuration.Services = services
+	configuration.Routing = cloneRouting(value.Routing)
 	if err := Validate(configuration); err != nil {
 		return Configuration{}, err
 	}
@@ -182,6 +190,9 @@ func Validate(value Configuration) error {
 				return fmt.Errorf("%s.port: conflicts with services[%d]", field, previousIndex)
 			}
 		}
+	}
+	if err := validateRouting(value.Routing); err != nil {
+		return err
 	}
 	return nil
 }
@@ -258,6 +269,7 @@ func clone(value Configuration) Configuration {
 	for index := range value.Services {
 		value.Services[index].VLESSReality = cloneVLESSReality(value.Services[index].VLESSReality)
 	}
+	value.Routing = cloneRouting(value.Routing)
 	return value
 }
 

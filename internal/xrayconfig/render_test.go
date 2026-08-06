@@ -10,6 +10,16 @@ import (
 func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
 	t.Parallel()
 	value := testConfiguration(t)
+	value.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{
+		{
+			RuleID: "block-private", DisplayName: "Block private", Enabled: true,
+			IPCIDRs: []string{"192.0.2.0/24"}, Action: config.RoutingActionBlocked,
+		},
+		{
+			RuleID: "allow-example", DisplayName: "Allow example", Enabled: true,
+			Domains: []string{"example.com"}, Protocols: []string{"tls"}, Action: config.RoutingActionDirect,
+		},
+	}}
 	raw, err := Render(value)
 	if err != nil || !json.Valid(raw) {
 		t.Fatalf("Render() = %s, %v", raw, err)
@@ -26,6 +36,11 @@ func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
 					Target string `json:"target"`
 				} `json:"realitySettings"`
 			} `json:"streamSettings"`
+			Sniffing struct {
+				Enabled      bool     `json:"enabled"`
+				DestOverride []string `json:"destOverride"`
+				RouteOnly    bool     `json:"routeOnly"`
+			} `json:"sniffing"`
 		} `json:"inbounds"`
 		Outbounds []struct {
 			Tag      string `json:"tag"`
@@ -36,6 +51,16 @@ func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
 				StatsUserOnline bool `json:"statsUserOnline"`
 			} `json:"levels"`
 		} `json:"policy"`
+		Routing struct {
+			Rules []struct {
+				RuleTag     string   `json:"ruleTag"`
+				OutboundTag string   `json:"outboundTag"`
+				Domain      []string `json:"domain"`
+				IP          []string `json:"ip"`
+				Protocol    []string `json:"protocol"`
+				InboundTag  []string `json:"inboundTag"`
+			} `json:"rules"`
+		} `json:"routing"`
 	}
 	if err := json.Unmarshal(raw, &generated); err != nil {
 		t.Fatal(err)
@@ -44,10 +69,19 @@ func TestRenderBuildsTypedServiceInbounds(t *testing.T) {
 		len(generated.Inbounds) != 3 || generated.Inbounds[1].Tag != "reality-backup" ||
 		generated.Inbounds[1].Protocol != "vless" ||
 		generated.Inbounds[1].StreamSettings.RealitySettings.Target != "www.cloudflare.com:443" ||
+		!generated.Inbounds[1].Sniffing.Enabled || !generated.Inbounds[1].Sniffing.RouteOnly ||
+		len(generated.Inbounds[1].Sniffing.DestOverride) != 3 ||
 		generated.Inbounds[2].Tag != "reality-main" || len(generated.Outbounds) != 2 ||
 		generated.Outbounds[1].Tag != "blocked" || generated.Outbounds[1].Protocol != "blackhole" ||
 		!generated.Policy.Levels["0"].StatsUserOnline {
 		t.Fatalf("generated Xray configuration = %+v", generated)
+	}
+	if len(generated.Routing.Rules) != 3 || generated.Routing.Rules[0].RuleTag != APIRuleTag ||
+		generated.Routing.Rules[1].RuleTag != "relayward-static-block-private" ||
+		generated.Routing.Rules[1].IP[0] != "192.0.2.0/24" ||
+		generated.Routing.Rules[2].Domain[0] != "domain:example.com" ||
+		generated.Routing.Rules[2].Protocol[0] != "tls" || len(generated.Routing.Rules[2].InboundTag) != 2 {
+		t.Fatalf("generated routing configuration = %+v", generated.Routing)
 	}
 }
 
@@ -60,13 +94,18 @@ func TestRenderOmitsDisabledServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	var generated struct {
-		Inbounds []json.RawMessage `json:"inbounds"`
+		Inbounds []struct {
+			Sniffing json.RawMessage `json:"sniffing"`
+		} `json:"inbounds"`
 	}
 	if err := json.Unmarshal(raw, &generated); err != nil {
 		t.Fatal(err)
 	}
 	if len(generated.Inbounds) != 2 {
 		t.Fatalf("inbounds = %d, want API plus one enabled service", len(generated.Inbounds))
+	}
+	if len(generated.Inbounds[1].Sniffing) != 0 {
+		t.Fatal("disabled or absent domain routing unexpectedly enabled sniffing")
 	}
 }
 

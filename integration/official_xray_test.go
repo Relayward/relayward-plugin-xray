@@ -42,6 +42,16 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	configuration.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{
+		{
+			RuleID: "block-documentation", DisplayName: "Block documentation range", Enabled: true,
+			IPCIDRs: []string{"192.0.2.0/24"}, Action: config.RoutingActionBlocked,
+		},
+		{
+			RuleID: "allow-example-tls", DisplayName: "Allow example TLS", Enabled: true,
+			Domains: []string{"example.com"}, Protocols: []string{"tls"}, Action: config.RoutingActionDirect,
+		},
+	}}
 	raw, err := config.Encode(configuration)
 	if err != nil {
 		t.Fatal(err)

@@ -53,14 +53,16 @@ Protocol priority is intentionally not fixed in this plan. It must be chosen fro
 
 ## Stage 4: Routing, DNS, and Outbound Policy
 
-Status: requirements pending.
+Status: static direct/blocked routing implemented and locally validated; DNS and additional outbound policy pending.
 
 - Model reusable Xray routing, DNS, and outbound policy separately from inbound service identity.
-- Preserve Relayward-managed dynamic block rules when static routing policy changes.
-- Validate rule ordering, references, and collision behavior before Xray replacement.
+- Implement ordered static rules for controlled domain-suffix, canonical destination-CIDR, and sniffed-protocol matches.
+- Limit static actions to the built-in direct and blocked outbounds until additional outbound requirements are approved.
+- Preserve Relayward-managed dynamic block rules ahead of static routing policy when either set changes.
+- Validate rule ordering, stable IDs, values, actions, and collision behavior before Xray replacement.
 - Keep sensitive destinations and activity data out of configuration logs and audit payloads.
 
-This stage does not add a raw JSON escape hatch. Any advanced configuration surface must remain structured, reviewable, and compatible with Relayward rollback semantics.
+The remaining work in this stage is structured DNS configuration and any approved additional outbound types. This stage does not add a raw JSON escape hatch. Any advanced configuration surface must remain structured, reviewable, and compatible with Relayward rollback semantics.
 
 ## Stage 5: Production Acceptance
 

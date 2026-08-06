@@ -134,7 +134,8 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	}
 	storedConfiguration, err := config.Decode(host.configured.Json)
 	if err != nil || storedConfiguration.CredentialSeed == "" || len(storedConfiguration.Services) != 2 ||
-		storedConfiguration.Services[0].VLESSReality.PrivateKey == "" || len(host.services.Services) != 2 {
+		storedConfiguration.Services[0].VLESSReality.PrivateKey == "" || len(host.services.Services) != 2 ||
+		len(storedConfiguration.Routing.Rules) != 1 || storedConfiguration.Routing.Rules[0].RuleID != "block-private" {
 		t.Fatalf("stored configuration = %+v, %v", storedConfiguration, err)
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
@@ -269,6 +270,10 @@ func testConfigurationJSON(t *testing.T) json.RawMessage {
 	if err != nil {
 		t.Fatal(err)
 	}
+	value.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{{
+		RuleID: "block-private", DisplayName: "Block private", Enabled: true,
+		IPCIDRs: []string{"192.0.2.0/24"}, Action: config.RoutingActionBlocked,
+	}}}
 	raw, err := config.Encode(value)
 	if err != nil {
 		t.Fatal(err)

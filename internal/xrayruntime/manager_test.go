@@ -33,7 +33,9 @@ func (*fakeRuntimeAPI) queryStats(context.Context) ([]trafficStat, error) {
 func (*fakeRuntimeAPI) queryOnlineIPs(context.Context, string) (map[string]int64, error) {
 	return map[string]int64{}, nil
 }
-func (*fakeRuntimeAPI) replaceBlockRules(context.Context, []blockRule) error { return nil }
+func (*fakeRuntimeAPI) replaceRoutingRules(context.Context, string, []xrayconfig.CompiledRoutingRule) error {
+	return nil
+}
 
 type failingTrafficRuntimeAPI struct {
 	removed bool
@@ -43,7 +45,7 @@ type trackingRuntimeAPI struct {
 	online       map[string]map[string]int64
 	stats        []trafficStat
 	added        []string
-	replacements [][]blockRule
+	replacements [][]xrayconfig.CompiledRoutingRule
 }
 
 func (*failingTrafficRuntimeAPI) addUser(context.Context, string, runtimeCredential) error {
@@ -60,7 +62,9 @@ func (*failingTrafficRuntimeAPI) queryStats(context.Context) ([]trafficStat, err
 func (*failingTrafficRuntimeAPI) queryOnlineIPs(context.Context, string) (map[string]int64, error) {
 	return map[string]int64{}, nil
 }
-func (*failingTrafficRuntimeAPI) replaceBlockRules(context.Context, []blockRule) error { return nil }
+func (*failingTrafficRuntimeAPI) replaceRoutingRules(context.Context, string, []xrayconfig.CompiledRoutingRule) error {
+	return nil
+}
 
 func (api *trackingRuntimeAPI) addUser(_ context.Context, inboundTag string, credential runtimeCredential) error {
 	api.added = append(api.added, inboundTag+"\x00"+credential.email)
@@ -78,8 +82,8 @@ func (api *trackingRuntimeAPI) queryOnlineIPs(_ context.Context, email string) (
 	}
 	return values, nil
 }
-func (api *trackingRuntimeAPI) replaceBlockRules(_ context.Context, blocks []blockRule) error {
-	api.replacements = append(api.replacements, append([]blockRule(nil), blocks...))
+func (api *trackingRuntimeAPI) replaceRoutingRules(_ context.Context, _ string, rules []xrayconfig.CompiledRoutingRule) error {
+	api.replacements = append(api.replacements, append([]xrayconfig.CompiledRoutingRule(nil), rules...))
 	return nil
 }
 
@@ -255,6 +259,10 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	t.Parallel()
 	manager := testManager(t)
 	configuration := testConfigurationValue(t, "0.0.0.0")
+	configuration.Routing = config.RoutingConfiguration{Rules: []config.RoutingRule{{
+		RuleID: "allow-example", DisplayName: "Allow example", Enabled: true,
+		Domains: []string{"example.com"}, Action: config.RoutingActionDirect,
+	}}}
 	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
 		t.Fatal(err)
 	}
@@ -279,8 +287,12 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.replacements) != 1 || len(api.replacements[0]) != 1 || api.replacements[0][0].email != email ||
-		api.replacements[0][0].inboundTag != testServiceID || api.replacements[0][0].sourceIP != "192.0.2.20" {
+	if len(api.replacements) != 1 || len(api.replacements[0]) != 3 ||
+		api.replacements[0][0].RuleTag != xrayconfig.APIRuleTag ||
+		api.replacements[0][1].UserEmails[0] != email ||
+		api.replacements[0][1].InboundTags[0] != testServiceID ||
+		api.replacements[0][1].SourceCIDRs[0].String() != "192.0.2.20/32" ||
+		api.replacements[0][2].RuleTag != "relayward-static-allow-example" {
 		t.Fatalf("replacement = %+v", api.replacements)
 	}
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil || len(api.replacements) != 1 {
@@ -296,7 +308,9 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	if err := manager.Apply(context.Background(), 2, digestB, configuration); err != nil {
 		t.Fatal(err)
 	}
-	if len(restoredAPI.replacements) != 1 || len(restoredAPI.replacements[0]) != 1 || restoredAPI.replacements[0][0].sourceIP != "192.0.2.20" {
+	if len(restoredAPI.replacements) != 1 || len(restoredAPI.replacements[0]) != 3 ||
+		restoredAPI.replacements[0][1].SourceCIDRs[0].String() != "192.0.2.20/32" ||
+		restoredAPI.replacements[0][2].RuleTag != "relayward-static-allow-example" {
 		t.Fatalf("restored replacement = %+v", restoredAPI.replacements)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -378,7 +392,7 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	if err := manager.Apply(context.Background(), 2, digestB, configuration); err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.added) != 2 || len(restored.replacements) != 1 || len(restored.replacements[0]) != 2 {
+	if len(restored.added) != 2 || len(restored.replacements) != 1 || len(restored.replacements[0]) != 3 {
 		t.Fatalf("restored runtime = added %q, blocks %+v", restored.added, restored.replacements)
 	}
 	editable := config.Editable(configuration)
@@ -396,7 +410,7 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	mainState := manager.services[serviceKey(authorizationID, "reality-main")]
 	if backupState == nil || backupState.enabled || mainState == nil || !mainState.enabled ||
 		len(manager.blocks) != 1 || manager.blocks[0].ServiceID != "reality-main" || manager.blockRevision != 0 ||
-		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 1 {
+		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 2 {
 		t.Fatalf("state after service removal = backup %+v, main %+v, blocks %+v, runtime %+v", backupState, mainState, manager.blocks, removed)
 	}
 	if err := manager.ApplyServiceState(context.Background(), 4, 4, authorizationID, "reality-backup", false); err != nil {

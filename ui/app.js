@@ -12,12 +12,18 @@ const messages = {
   "Node": "节点",
   "Refresh": "刷新",
   "Services": "服务",
+  "Routing": "路由",
   "Runtime": "运行时",
   "Proxy services": "代理服务",
   "Independent listeners published by this node": "此节点发布的独立监听服务",
   "Add service": "新增服务",
   "No services configured": "尚未配置服务",
   "Add a service to publish an Xray inbound": "新增服务后即可发布 Xray 入站",
+  "Static routing rules": "静态路由规则",
+  "Rules are evaluated from top to bottom after Relayward dynamic blocks": "Relayward 动态阻断之后，静态规则按从上到下的顺序匹配",
+  "Add rule": "新增规则",
+  "No static routing rules": "尚未配置静态路由规则",
+  "Unmatched traffic uses the direct outbound": "未匹配的流量使用直连出站",
   "Local runtime": "本地运行时",
   "Xray release and private control endpoint": "Xray 版本与私有控制端点",
   "Xray version": "Xray 版本",
@@ -52,7 +58,30 @@ const messages = {
   "Public port {port}": "公网端口 {port}",
   "Delete service": "删除服务",
   "Delete {name}? The change is published only after you save the configuration.": "删除 {name}？只有保存配置后，此更改才会发布。",
-  "Service changes are ready. Save the configuration to publish them.": "服务更改已就绪，保存配置后发布。",
+  "Configuration changes are ready. Save to publish them.": "配置更改已就绪，保存后发布。",
+  "All populated match categories must match": "已填写的匹配分类必须同时满足",
+  "Identity and action": "标识与动作",
+  "Rule ID": "规则 ID",
+  "Rule ID already exists.": "规则 ID 已存在。",
+  "A node can contain at most 128 routing rules.": "一个节点最多可配置 128 条路由规则。",
+  "Action": "动作",
+  "Block": "阻断",
+  "Direct": "直连",
+  "Destination matches": "目标匹配",
+  "Domain suffixes": "域名后缀",
+  "One lowercase domain per line; subdomains are included": "每行一个小写域名，同时匹配其子域名",
+  "IP CIDRs": "IP CIDR",
+  "One canonical IPv4 or IPv6 CIDR per line": "每行一个规范的 IPv4 或 IPv6 CIDR",
+  "Sniffed protocols": "嗅探协议",
+  "Apply rule": "应用规则",
+  "Add routing rule": "新增路由规则",
+  "Edit routing rule": "编辑路由规则",
+  "Delete routing rule": "删除路由规则",
+  "Delete {name}? The rule remains active until you save the configuration.": "删除 {name}？保存配置前，该规则仍保持生效。",
+  "Move up": "上移",
+  "Move down": "下移",
+  "No match values configured.": "至少需要配置一个匹配项。",
+  "Domains {domains} · CIDRs {cidrs} · Protocols {protocols}": "域名 {domains} · CIDR {cidrs} · 协议 {protocols}",
   "Online": "在线",
   "Offline": "离线",
   "Generation {generation}": "第 {generation} 代配置",
@@ -71,6 +100,8 @@ let selectedNode;
 let stored;
 let services = [];
 let editingServiceID = null;
+let routingRules = [];
+let editingRoutingRuleID = null;
 let busy = false;
 
 function text(message, values = {}) {
@@ -86,9 +117,12 @@ function translatePage() {
   }
   elements.closeServiceDialog.title = text("Close");
   elements.closeServiceDialog.setAttribute("aria-label", text("Close"));
+  elements.closeRoutingRuleDialog.title = text("Close");
+  elements.closeRoutingRuleDialog.setAttribute("aria-label", text("Close"));
   updateNodeStatus();
   updateGeneration();
   renderServices();
+  renderRoutingRules();
 }
 
 function showError(cause) {
@@ -103,7 +137,7 @@ function clearMessages() {
 }
 
 function showPendingNotice() {
-  elements.notice.textContent = text("Service changes are ready. Save the configuration to publish them.");
+  elements.notice.textContent = text("Configuration changes are ready. Save to publish them.");
   elements.notice.hidden = false;
   elements.error.hidden = true;
 }
@@ -114,8 +148,10 @@ function setBusy(value, label) {
   elements.nodeSelect.disabled = value || nodes.length === 0;
   elements.saveButton.disabled = value;
   elements.addServiceButton.disabled = value;
+  elements.addRoutingRuleButton.disabled = value;
   elements.saveButton.textContent = value && label === "save" ? text("Saving...") : text("Save configuration");
   renderServices();
+  renderRoutingRules();
 }
 
 function updateNodeStatus() {
@@ -182,9 +218,19 @@ function cloneServices(values) {
   }));
 }
 
+function cloneRoutingRules(values) {
+  return values.map((rule) => ({
+    ...rule,
+    domains: [...(rule.domains ?? [])],
+    ip_cidrs: [...(rule.ip_cidrs ?? [])],
+    protocols: [...(rule.protocols ?? [])],
+  }));
+}
+
 function populateConfiguration() {
   const configuration = stored?.exists ? stored.configuration : undefined;
   services = [];
+  routingRules = [];
   if (configuration == null) {
     elements.xrayVersion.value = "26.3.27";
     elements.apiPort.value = "10085";
@@ -193,8 +239,10 @@ function populateConfiguration() {
     elements.xrayVersion.value = configuration.xray_version;
     elements.apiPort.value = String(configuration.api_port);
     services = cloneServices(Array.isArray(configuration.services) ? configuration.services : []);
+    routingRules = cloneRoutingRules(Array.isArray(configuration.routing?.rules) ? configuration.routing.rules : []);
   }
   renderServices();
+  renderRoutingRules();
   updateGeneration();
 }
 
@@ -254,6 +302,89 @@ function renderServices() {
   elements.serviceListEmpty.hidden = services.length !== 0;
 }
 
+function routingRuleStatus(rule) {
+  return rule.enabled ? text("Enabled status") : text("Disabled status");
+}
+
+function routingRuleRow(rule, index) {
+  const row = document.createElement("article");
+  row.className = "routing-rule-row";
+
+  const identity = document.createElement("div");
+  identity.className = "service-identity";
+  const heading = document.createElement("div");
+  heading.className = "service-name-line";
+  const name = document.createElement("strong");
+  name.textContent = rule.display_name;
+  const status = document.createElement("span");
+  status.className = `badge service-status${rule.enabled ? " connected" : ""}`;
+  status.textContent = routingRuleStatus(rule);
+  const action = document.createElement("span");
+  action.className = `badge${rule.action === "blocked" ? " destructive" : ""}`;
+  action.textContent = text(rule.action === "blocked" ? "Block" : "Direct");
+  heading.append(name, status, action);
+  const identifier = document.createElement("span");
+  identifier.className = "service-id";
+  identifier.textContent = rule.rule_id;
+  identity.append(heading, identifier);
+
+  const matches = document.createElement("div");
+  matches.className = "routing-rule-matches";
+  matches.textContent = text("Domains {domains} · CIDRs {cidrs} · Protocols {protocols}", {
+    domains: rule.domains?.length ?? 0,
+    cidrs: rule.ip_cidrs?.length ?? 0,
+    protocols: rule.protocols?.length ?? 0,
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "routing-rule-actions";
+  const moveUp = document.createElement("button");
+  moveUp.className = "icon-button";
+  moveUp.type = "button";
+  moveUp.disabled = busy || index === 0;
+  moveUp.title = text("Move up");
+  moveUp.setAttribute("aria-label", text("Move up"));
+  moveUp.textContent = "↑";
+  moveUp.addEventListener("click", () => moveRoutingRule(index, -1));
+  const moveDown = document.createElement("button");
+  moveDown.className = "icon-button";
+  moveDown.type = "button";
+  moveDown.disabled = busy || index === routingRules.length - 1;
+  moveDown.title = text("Move down");
+  moveDown.setAttribute("aria-label", text("Move down"));
+  moveDown.textContent = "↓";
+  moveDown.addEventListener("click", () => moveRoutingRule(index, 1));
+  const edit = document.createElement("button");
+  edit.className = "button button-outline button-compact";
+  edit.type = "button";
+  edit.disabled = busy;
+  edit.textContent = text("Edit");
+  edit.addEventListener("click", () => openRoutingRuleDialog(rule.rule_id));
+  const remove = document.createElement("button");
+  remove.className = "button button-ghost-destructive button-compact";
+  remove.type = "button";
+  remove.disabled = busy;
+  remove.textContent = text("Delete");
+  remove.addEventListener("click", () => void removeRoutingRule(rule.rule_id));
+  actions.append(moveUp, moveDown, edit, remove);
+
+  row.append(identity, matches, actions);
+  return row;
+}
+
+function renderRoutingRules() {
+  elements.routingRuleList.replaceChildren(...routingRules.map(routingRuleRow));
+  elements.routingRuleListEmpty.hidden = routingRules.length !== 0;
+}
+
+function moveRoutingRule(index, offset) {
+  const target = index + offset;
+  if (busy || target < 0 || target >= routingRules.length) return;
+  [routingRules[index], routingRules[target]] = [routingRules[target], routingRules[index]];
+  renderRoutingRules();
+  showPendingNotice();
+}
+
 async function loadConfiguration() {
   if (selectedNode == null) return;
   clearMessages();
@@ -294,6 +425,7 @@ function configurationForSave() {
     xray_version: elements.xrayVersion.value.trim(),
     api_port: numberValue("api-port"),
     services: cloneServices(services).sort((first, second) => first.service_id.localeCompare(second.service_id)),
+    routing: { rules: cloneRoutingRules(routingRules) },
   };
 }
 
@@ -415,6 +547,120 @@ async function removeService(serviceID) {
   showPendingNotice();
 }
 
+function nextRoutingRuleDefaults() {
+  let suffix = routingRules.length + 1;
+  let ruleID = `routing-rule-${suffix}`;
+  while (routingRules.some((rule) => rule.rule_id === ruleID)) {
+    suffix += 1;
+    ruleID = `routing-rule-${suffix}`;
+  }
+  return {
+    rule_id: ruleID,
+    display_name: locale === "zh-CN" ? `路由规则 ${suffix}` : `Routing rule ${suffix}`,
+    enabled: true,
+    domains: [],
+    ip_cidrs: [],
+    protocols: [],
+    action: "blocked",
+  };
+}
+
+function lines(value) {
+  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function populateRoutingRuleDialog(rule) {
+  elements.routingRuleEnabled.checked = rule.enabled;
+  elements.routingRuleId.value = rule.rule_id;
+  elements.routingRuleId.disabled = editingRoutingRuleID != null;
+  elements.routingRuleDisplayName.value = rule.display_name;
+  elements.routingRuleAction.value = rule.action;
+  elements.routingDomains.value = (rule.domains ?? []).join("\n");
+  elements.routingIpCidrs.value = (rule.ip_cidrs ?? []).join("\n");
+  const protocols = new Set(rule.protocols ?? []);
+  for (const protocol of ["http", "tls", "quic", "bittorrent"]) {
+    elements[`routingProtocol${protocol[0].toUpperCase()}${protocol.slice(1)}`].checked = protocols.has(protocol);
+  }
+  elements.routingRuleId.setCustomValidity("");
+  elements.routingDomains.setCustomValidity("");
+}
+
+function openRoutingRuleDialog(ruleID = null) {
+  if (busy) return;
+  if (ruleID == null && routingRules.length >= 128) {
+    showError(new Error(text("A node can contain at most 128 routing rules.")));
+    return;
+  }
+  editingRoutingRuleID = ruleID;
+  const rule = ruleID == null ? nextRoutingRuleDefaults() : routingRules.find((candidate) => candidate.rule_id === ruleID);
+  if (rule == null) return;
+  elements.routingRuleDialogTitle.textContent = text(ruleID == null ? "Add routing rule" : "Edit routing rule");
+  populateRoutingRuleDialog(rule);
+  elements.routingRuleDialog.showModal();
+}
+
+function closeRoutingRuleDialog() {
+  editingRoutingRuleID = null;
+  elements.routingRuleDialog.close();
+}
+
+function routingRuleFromDialog() {
+  const protocols = ["http", "tls", "quic", "bittorrent"].filter((protocol) => {
+    return elements[`routingProtocol${protocol[0].toUpperCase()}${protocol.slice(1)}`].checked;
+  });
+  return {
+    rule_id: elements.routingRuleId.value.trim(),
+    display_name: elements.routingRuleDisplayName.value.trim(),
+    enabled: elements.routingRuleEnabled.checked,
+    domains: lines(elements.routingDomains.value),
+    ip_cidrs: lines(elements.routingIpCidrs.value),
+    protocols,
+    action: elements.routingRuleAction.value,
+  };
+}
+
+function applyRoutingRule(event) {
+  event.preventDefault();
+  const candidate = routingRuleFromDialog();
+  const duplicate = routingRules.some((rule) => rule.rule_id === candidate.rule_id && rule.rule_id !== editingRoutingRuleID);
+  elements.routingRuleId.setCustomValidity(duplicate ? text("Rule ID already exists.") : "");
+  const hasMatch = candidate.domains.length + candidate.ip_cidrs.length + candidate.protocols.length > 0;
+  elements.routingDomains.setCustomValidity(hasMatch ? "" : text("No match values configured."));
+  if (!elements.routingRuleForm.reportValidity()) return;
+  if (editingRoutingRuleID == null) {
+    routingRules.push(candidate);
+  } else {
+    const index = routingRules.findIndex((rule) => rule.rule_id === editingRoutingRuleID);
+    if (index < 0) return;
+    routingRules[index] = candidate;
+  }
+  closeRoutingRuleDialog();
+  renderRoutingRules();
+  showPendingNotice();
+}
+
+async function removeRoutingRule(ruleID) {
+  if (busy) return;
+  const rule = routingRules.find((candidate) => candidate.rule_id === ruleID);
+  if (rule == null) return;
+  let confirmed;
+  try {
+    confirmed = await client.confirm({
+      title: text("Delete routing rule"),
+      message: text("Delete {name}? The rule remains active until you save the configuration.", { name: rule.display_name }),
+      confirm_label: text("Delete"),
+      destructive: true,
+    });
+  } catch (cause) {
+    showError(cause);
+    return;
+  }
+  if (!confirmed) return;
+  routingRules = routingRules.filter((candidate) => candidate.rule_id !== ruleID);
+  renderRoutingRules();
+  showPendingNotice();
+}
+
 function selectTab(button) {
   for (const tab of document.querySelectorAll("[role=tab]")) {
     const active = tab === button;
@@ -432,10 +678,17 @@ elements.nodeSelect.addEventListener("change", () => {
 });
 elements.refreshButton.addEventListener("click", () => void refreshNodes());
 elements.addServiceButton.addEventListener("click", () => openServiceDialog());
+elements.addRoutingRuleButton.addEventListener("click", () => openRoutingRuleDialog());
 elements.closeServiceDialog.addEventListener("click", closeServiceDialog);
 elements.cancelServiceButton.addEventListener("click", closeServiceDialog);
 elements.serviceId.addEventListener("input", () => elements.serviceId.setCustomValidity(""));
 elements.serviceForm.addEventListener("submit", applyService);
+elements.closeRoutingRuleDialog.addEventListener("click", closeRoutingRuleDialog);
+elements.cancelRoutingRuleButton.addEventListener("click", closeRoutingRuleDialog);
+elements.routingRuleId.addEventListener("input", () => elements.routingRuleId.setCustomValidity(""));
+elements.routingDomains.addEventListener("input", () => elements.routingDomains.setCustomValidity(""));
+elements.routingIpCidrs.addEventListener("input", () => elements.routingDomains.setCustomValidity(""));
+elements.routingRuleForm.addEventListener("submit", applyRoutingRule);
 elements.configurationForm.addEventListener("submit", (event) => void saveConfiguration(event));
 window.addEventListener("pagehide", () => client.dispose(), { once: true });
 

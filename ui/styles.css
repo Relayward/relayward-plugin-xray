@@ -69,7 +69,8 @@ h4 {
 }
 
 input,
-select {
+select,
+textarea {
   display: flex;
   width: 100%;
   min-width: 0;
@@ -84,13 +85,23 @@ select {
   transition: border-color 150ms, box-shadow 150ms;
 }
 
+textarea {
+  min-height: 7rem;
+  height: auto;
+  padding: 0.625rem 0.75rem;
+  resize: vertical;
+  line-height: 1.4;
+}
+
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--ring);
 }
 
 input:disabled,
 select:disabled,
+textarea:disabled,
 button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
@@ -164,6 +175,12 @@ button:disabled {
   color: var(--success);
 }
 
+.badge.destructive {
+  border-color: color-mix(in oklab, var(--destructive) 30%, transparent);
+  background: color-mix(in oklab, var(--destructive) 10%, transparent);
+  color: var(--destructive);
+}
+
 .card {
   overflow: hidden;
   border: 1px solid var(--border);
@@ -219,14 +236,16 @@ button:disabled {
   margin-bottom: 1.5rem;
 }
 
-.service-list {
+.service-list,
+.routing-rule-list {
   display: grid;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
 }
 
-.service-row {
+.service-row,
+.routing-rule-row {
   display: grid;
   grid-template-columns: minmax(12rem, 1.2fr) minmax(12rem, 1fr) auto;
   align-items: center;
@@ -235,11 +254,17 @@ button:disabled {
   padding: 1rem;
 }
 
-.service-row + .service-row {
+.routing-rule-row {
+  grid-template-columns: minmax(12rem, 1.1fr) minmax(14rem, 1fr) auto;
+}
+
+.service-row + .service-row,
+.routing-rule-row + .routing-rule-row {
   border-top: 1px solid var(--border);
 }
 
-.service-row:hover {
+.service-row:hover,
+.routing-rule-row:hover {
   background: color-mix(in oklab, var(--muted) 45%, transparent);
 }
 
@@ -289,6 +314,20 @@ button:disabled {
   gap: 0.5rem;
 }
 
+.routing-rule-matches {
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+}
+
+.routing-rule-actions {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 0.375rem;
+}
+
 .list-empty {
   display: grid;
   min-height: 12rem;
@@ -323,6 +362,45 @@ button:disabled {
   color: var(--foreground);
   font-size: 0.875rem;
   font-weight: 500;
+}
+
+.field small {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1rem;
+}
+
+.protocol-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.75rem;
+}
+
+.protocol-grid label {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-height: 2.5rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.protocol-grid label:hover {
+  background: var(--accent);
+}
+
+.protocol-grid input {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: none;
 }
 
 .readonly-field output {
@@ -530,11 +608,25 @@ button:disabled {
     gap: 0.75rem;
   }
 
+  .routing-rule-row {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
   .service-actions {
     justify-content: stretch;
   }
 
+  .routing-rule-actions {
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+
   .service-actions .button {
+    flex: 1 1 0;
+  }
+
+  .routing-rule-actions .button {
     flex: 1 1 0;
   }
 
