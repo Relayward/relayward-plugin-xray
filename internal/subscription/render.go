@@ -1,0 +1,113 @@
+package subscription
+
+import (
+	"encoding/json"
+	"errors"
+	"net"
+	"net/netip"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+
+	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
+
+	"github.com/Relayward/relayward-plugin-xray/internal/config"
+)
+
+var publicDomainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$`)
+
+func Render(configuration config.Configuration, request *centerpluginv1.RenderSubscriptionRequest) (*centerpluginv1.RenderSubscriptionResponse, error) {
+	if err := centerpluginv1.ValidateRenderSubscriptionRequest(request); err != nil {
+		return nil, err
+	}
+	if err := config.Validate(configuration); err != nil {
+		return nil, errors.New("stored Xray configuration is invalid")
+	}
+	service := configuration.VLESSReality
+	if !service.Enabled {
+		return nil, errors.New("Xray service is disabled")
+	}
+	host, err := normalizePublicAddress(request.PublicAddress)
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := config.RealityPublicKey(service.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	serverName := service.ServerNames[0]
+	shortID := service.ShortIDs[0]
+	response := &centerpluginv1.RenderSubscriptionResponse{
+		Services: make([]*centerpluginv1.SubscriptionServiceContribution, len(request.Services)),
+	}
+	for index, binding := range request.Services {
+		if binding.ServiceId != config.VLESSRealityServiceID {
+			return nil, errors.New("subscription requests an unsupported Xray service")
+		}
+		credential, err := config.DeriveCredential(configuration.CredentialSeed, request.AuthorizationId, binding.ServiceId)
+		if err != nil {
+			return nil, err
+		}
+		uri := vlessURI(host, service.PublicPort, credential, binding.DisplayName, service.Flow,
+			service.Fingerprint, serverName, publicKey, shortID)
+		mihomo, err := json.Marshal(map[string]any{
+			"name": binding.DisplayName, "type": "vless", "server": host, "port": service.PublicPort,
+			"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": service.Flow,
+			"servername": serverName, "client-fingerprint": service.Fingerprint,
+			"reality-opts": map[string]any{"public-key": publicKey, "short-id": shortID},
+		})
+		if err != nil {
+			return nil, err
+		}
+		singBox, err := json.Marshal(map[string]any{
+			"type": "vless", "tag": binding.DisplayName, "server": host, "server_port": service.PublicPort,
+			"uuid": credential, "flow": service.Flow,
+			"tls": map[string]any{
+				"enabled": true, "server_name": serverName,
+				"utls":    map[string]any{"enabled": true, "fingerprint": service.Fingerprint},
+				"reality": map[string]any{"enabled": true, "public_key": publicKey, "short_id": shortID},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		response.Services[index] = &centerpluginv1.SubscriptionServiceContribution{
+			ServiceId: binding.ServiceId, DisplayName: binding.DisplayName,
+			Uris: []string{uri}, MihomoProxiesJson: [][]byte{mihomo}, SingBoxOutboundsJson: [][]byte{singBox},
+		}
+	}
+	if err := centerpluginv1.ValidateRenderSubscriptionResponse(request, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func vlessURI(host string, port uint16, credential, displayName, flow, fingerprint, serverName, publicKey, shortID string) string {
+	value := &url.URL{
+		Scheme: "vless", User: url.User(credential), Host: net.JoinHostPort(host, strconv.Itoa(int(port))),
+		Fragment: displayName,
+	}
+	query := url.Values{
+		"encryption": {"none"}, "flow": {flow}, "fp": {fingerprint}, "pbk": {publicKey},
+		"security": {"reality"}, "sid": {shortID}, "sni": {serverName}, "type": {"tcp"},
+	}
+	value.RawQuery = query.Encode()
+	return value.String()
+}
+
+func normalizePublicAddress(value string) (string, error) {
+	if value == "" || value != strings.TrimSpace(value) {
+		return "", errors.New("node public address is required")
+	}
+	if address, err := netip.ParseAddr(value); err == nil {
+		if address.String() != value || address.IsUnspecified() {
+			return "", errors.New("node public address must be a canonical routable host")
+		}
+		return value, nil
+	}
+	if len(value) > 253 || !publicDomainPattern.MatchString(value) {
+		return "", errors.New("node public address must be a domain or canonical IP without a port")
+	}
+	return strings.ToLower(value), nil
+}

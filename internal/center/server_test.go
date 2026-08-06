@@ -2,19 +2,23 @@ package center
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
+	agentv1 "github.com/Relayward/relayward-sdk/agent/v1"
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 	"github.com/Relayward/relayward-sdk/contract"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/Relayward/relayward-plugin-xray/internal/config"
 	"github.com/Relayward/relayward-plugin-xray/internal/pluginmeta"
 )
 
 func TestServerLifecycle(t *testing.T) {
 	t.Parallel()
-	server := New("0.1.0")
+	server := New("0.1.0", &hostStub{})
 	info, err := server.GetInfo(context.Background(), &centerpluginv1.GetInfoRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +30,7 @@ func TestServerLifecycle(t *testing.T) {
 	if err != nil || before.Health != centerpluginv1.Health_HEALTH_STARTING {
 		t.Fatalf("GetStatus() before activation = %+v, %v", before, err)
 	}
-	activation := &centerpluginv1.ActivateRequest{Permissions: []string{}}
+	activation := &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}
 	activated, err := server.Activate(context.Background(), activation)
 	if err != nil {
 		t.Fatal(err)
@@ -42,8 +46,180 @@ func TestServerLifecycle(t *testing.T) {
 
 func TestServerRejectsPermissions(t *testing.T) {
 	t.Parallel()
-	_, err := New("0.1.0").Activate(context.Background(), &centerpluginv1.ActivateRequest{Permissions: []string{centerpluginv1.PermissionNodesRead}})
+	_, err := New("0.1.0", &hostStub{}).Activate(context.Background(), &centerpluginv1.ActivateRequest{Permissions: []string{centerpluginv1.PermissionNodesRead}})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("Activate() code = %v, want InvalidArgument", status.Code(err))
 	}
+}
+
+type hostStub struct {
+	centerpluginv1.PluginHostClient
+	configuration *centerpluginv1.NodePluginConfiguration
+	configured    *centerpluginv1.ConfigureNodePluginRequest
+	services      *centerpluginv1.ReplaceServicesRequest
+}
+
+func (host *hostStub) ReplaceServices(_ context.Context, request *centerpluginv1.ReplaceServicesRequest,
+	_ ...grpc.CallOption,
+) (*centerpluginv1.ServicesReplaced, error) {
+	host.services = request
+	return &centerpluginv1.ServicesReplaced{ServiceCount: uint32(len(request.Services))}, nil
+}
+
+func (*hostStub) ListNodes(context.Context, *centerpluginv1.ListNodesRequest, ...grpc.CallOption) (*centerpluginv1.ListNodesResponse, error) {
+	return &centerpluginv1.ListNodesResponse{Nodes: []*centerpluginv1.Node{{
+		Id: "10000000-0000-4000-8000-000000000001", Name: "Edge", Enabled: true, Connected: true,
+	}}}, nil
+}
+
+func (host *hostStub) GetNodePluginConfiguration(context.Context, *centerpluginv1.GetNodePluginConfigurationRequest,
+	...grpc.CallOption,
+) (*centerpluginv1.NodePluginConfiguration, error) {
+	if host.configuration == nil {
+		return nil, status.Error(codes.NotFound, "missing")
+	}
+	return host.configuration, nil
+}
+
+func (host *hostStub) ConfigureNodePlugin(_ context.Context, request *centerpluginv1.ConfigureNodePluginRequest,
+	_ ...grpc.CallOption,
+) (*centerpluginv1.NodePluginConfigured, error) {
+	host.configured = request
+	digest, err := agentv1.PluginConfigurationDigest(request.Json)
+	if err != nil {
+		return nil, err
+	}
+	host.configuration = &centerpluginv1.NodePluginConfiguration{
+		Generation: request.ExpectedGeneration + 1, Version: "0.1.0", Sha256: digest,
+		Json: append([]byte(nil), request.Json...),
+	}
+	return &centerpluginv1.NodePluginConfigured{Generation: request.ExpectedGeneration + 1, Sha256: digest}, nil
+}
+
+func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
+	host := &hostStub{}
+	server := New("0.1.0", host)
+	if _, err := server.Activate(t.Context(), &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "nodes.list", Json: []byte(`{}`)})
+	if err != nil || !json.Valid(nodes.GetJson()) {
+		t.Fatalf("nodes.list = %s, %v", nodes.GetJson(), err)
+	}
+	nodeID := "10000000-0000-4000-8000-000000000001"
+	fullConfiguration, err := config.Decode(testConfigurationJSON(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := config.Editable(fullConfiguration)
+	missingRequest := []byte(`{"node_id":"` + nodeID + `"}`)
+	missing, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
+	if err != nil || string(missing.Json) != `{"exists":false,"node_id":"`+nodeID+`"}` {
+		t.Fatalf("configuration.get missing = %s, %v", missing.GetJson(), err)
+	}
+	saveRequest, err := json.Marshal(saveConfigurationRequest{
+		NodeID: nodeID, ExpectedGeneration: 0, Configuration: configuration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.save", Json: saveRequest})
+	if err != nil || host.configured == nil || host.services == nil || !json.Valid(saved.GetJson()) {
+		t.Fatalf("configuration.save = %s, captured %+v, %v", saved.GetJson(), host.configured, err)
+	}
+	storedConfiguration, err := config.Decode(host.configured.Json)
+	if err != nil || storedConfiguration.CredentialSeed == "" || storedConfiguration.VLESSReality.PrivateKey == "" {
+		t.Fatalf("stored configuration = %+v, %v", storedConfiguration, err)
+	}
+	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
+	if err != nil || !json.Valid(loaded.GetJson()) || jsonContainsKey(loaded.Json, "credential_seed") || jsonContainsKey(loaded.Json, "private_key") {
+		t.Fatalf("configuration.get = %s, %v", loaded.GetJson(), err)
+	}
+	configuration.VLESSReality.DisplayName = "Updated VLESS"
+	updateRequest, err := json.Marshal(saveConfigurationRequest{
+		NodeID: nodeID, ExpectedGeneration: 1, Configuration: configuration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.save", Json: updateRequest}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Decode(host.configured.Json)
+	if err != nil || updated.CredentialSeed != storedConfiguration.CredentialSeed ||
+		updated.VLESSReality.PrivateKey != storedConfiguration.VLESSReality.PrivateKey || updated.VLESSReality.DisplayName != "Updated VLESS" {
+		t.Fatalf("updated configuration = %+v, %v", updated, err)
+	}
+}
+
+func jsonContainsKey(raw []byte, key string) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	var contains func(any) bool
+	contains = func(candidate any) bool {
+		switch typed := candidate.(type) {
+		case map[string]any:
+			if _, exists := typed[key]; exists {
+				return true
+			}
+			for _, child := range typed {
+				if contains(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if contains(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return contains(value)
+}
+
+func TestRenderSubscription(t *testing.T) {
+	t.Parallel()
+	configuration := testConfigurationJSON(t)
+	digest, err := agentv1.PluginConfigurationDigest(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &hostStub{configuration: &centerpluginv1.NodePluginConfiguration{
+		Generation: 1, Version: "0.1.0", Sha256: digest, Json: configuration,
+	}}
+	server := New("0.1.0", host)
+	if _, err := server.Activate(t.Context(), &centerpluginv1.ActivateRequest{Permissions: append([]string(nil), requiredPermissions...)}); err != nil {
+		t.Fatal(err)
+	}
+	request := &centerpluginv1.RenderSubscriptionRequest{
+		AuthorizationId: "10000000-0000-4000-8000-000000000001",
+		NodeId:          "20000000-0000-4000-8000-000000000002", PublicAddress: "edge.example.com",
+		Services: []*centerpluginv1.SubscriptionServiceBinding{{
+			ServiceId: config.VLESSRealityServiceID, DisplayName: "Edge VLESS",
+		}},
+	}
+	response, err := server.RenderSubscription(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := centerpluginv1.ValidateRenderSubscriptionResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testConfigurationJSON(t *testing.T) json.RawMessage {
+	t.Helper()
+	value, err := config.NewConfiguration("26.3.27", 10085, 443, 443, "www.microsoft.com:443", "www.microsoft.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := config.Encode(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }

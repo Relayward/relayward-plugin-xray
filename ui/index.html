@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Relayward Xray</title>
+    <link rel="stylesheet" href="./vendor/relayward-ui.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="node-bar" aria-labelledby="node-title">
+        <div class="node-heading">
+          <h2 id="node-title" data-i18n="Node configuration">Node configuration</h2>
+          <span class="badge" id="node-status" data-i18n="Not selected">Not selected</span>
+        </div>
+        <div class="node-controls">
+          <label class="sr-only" for="node-select" data-i18n="Node">Node</label>
+          <select id="node-select" disabled></select>
+          <button class="button button-outline" id="refresh-button" type="button" data-i18n="Refresh">Refresh</button>
+        </div>
+      </section>
+
+      <div class="notice" id="notice" role="status" hidden></div>
+      <div class="error" id="error" role="alert" hidden></div>
+
+      <section class="card" id="configuration-card" hidden>
+        <div class="tabs" role="tablist" aria-label="Xray configuration">
+          <button class="tab active" id="service-tab" type="button" role="tab" aria-selected="true" aria-controls="service-panel" data-panel="service-panel" data-i18n="Service">Service</button>
+          <button class="tab" id="network-tab" type="button" role="tab" aria-selected="false" aria-controls="network-panel" data-panel="network-panel" data-i18n="Network">Network</button>
+          <button class="tab" id="runtime-tab" type="button" role="tab" aria-selected="false" aria-controls="runtime-panel" data-panel="runtime-panel" data-i18n="Runtime">Runtime</button>
+        </div>
+
+        <form id="configuration-form">
+          <div class="panel" id="service-panel" role="tabpanel" aria-labelledby="service-tab">
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="VLESS REALITY">VLESS REALITY</h3>
+                <p data-i18n="Service identity and client defaults">Service identity and client defaults</p>
+              </div>
+              <label class="switch-row" for="enabled">
+                <span data-i18n="Enabled">Enabled</span>
+                <input id="enabled" type="checkbox" role="switch" />
+              </label>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="display-name">
+                <span data-i18n="Display name">Display name</span>
+                <input id="display-name" maxlength="100" required />
+              </label>
+              <label class="field" for="xray-version">
+                <span data-i18n="Xray version">Xray version</span>
+                <input id="xray-version" inputmode="decimal" placeholder="26.3.27" required />
+              </label>
+              <label class="field" for="fingerprint">
+                <span data-i18n="Client fingerprint">Client fingerprint</span>
+                <select id="fingerprint">
+                  <option value="chrome">Chrome</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="safari">Safari</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="edge">Edge</option>
+                  <option value="randomized">Randomized</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div class="panel" id="network-panel" role="tabpanel" aria-labelledby="network-tab" hidden>
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="Listener and REALITY">Listener and REALITY</h3>
+                <p data-i18n="Inbound ports and handshake target">Inbound ports and handshake target</p>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="listen-address">
+                <span data-i18n="Listen address">Listen address</span>
+                <input id="listen-address" placeholder="0.0.0.0" required />
+              </label>
+              <label class="field" for="listen-port">
+                <span data-i18n="Listen port">Listen port</span>
+                <input id="listen-port" type="number" min="1" max="65535" required />
+              </label>
+              <label class="field" for="public-port">
+                <span data-i18n="Public port">Public port</span>
+                <input id="public-port" type="number" min="1" max="65535" required />
+              </label>
+              <label class="field" for="reality-target">
+                <span data-i18n="REALITY target">REALITY target</span>
+                <input id="reality-target" placeholder="www.microsoft.com:443" required />
+              </label>
+              <label class="field" for="server-name">
+                <span data-i18n="Server name">Server name</span>
+                <input id="server-name" placeholder="www.microsoft.com" required />
+              </label>
+            </div>
+          </div>
+
+          <div class="panel" id="runtime-panel" role="tabpanel" aria-labelledby="runtime-tab" hidden>
+            <div class="panel-header">
+              <div>
+                <h3 data-i18n="Local runtime">Local runtime</h3>
+                <p data-i18n="Private control endpoint">Private control endpoint</p>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="api-port">
+                <span data-i18n="Local API port">Local API port</span>
+                <input id="api-port" type="number" min="1024" max="65535" required />
+              </label>
+              <div class="field readonly-field">
+                <span data-i18n="Transport">Transport</span>
+                <output>VLESS + REALITY + TCP Vision</output>
+              </div>
+            </div>
+          </div>
+
+          <footer class="card-footer">
+            <span class="generation" id="generation"></span>
+            <button class="button button-primary" id="save-button" type="submit" data-i18n="Save configuration">Save configuration</button>
+          </footer>
+        </form>
+      </section>
+
+      <section class="empty-state" id="empty-state" hidden>
+        <h3 data-i18n="No nodes available">No nodes available</h3>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

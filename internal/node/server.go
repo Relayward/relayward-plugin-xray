@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/Relayward/relayward-sdk/contract"
 	nodepluginv1 "github.com/Relayward/relayward-sdk/nodeplugin/v1"
@@ -17,6 +18,8 @@ import (
 type Runtime interface {
 	Validate(context.Context, config.Configuration) error
 	Apply(context.Context, uint64, string, config.Configuration) error
+	ApplyServiceState(context.Context, uint64, uint64, string, string, bool) error
+	CollectTraffic(context.Context) ([]xrayruntime.TrafficCounter, error)
 	GetStatus() xrayruntime.Status
 }
 
@@ -35,7 +38,65 @@ func (server *Server) GetInfo(context.Context, *nodepluginv1.GetInfoRequest) (*n
 		ApiVersion:   contract.NodePluginAPIVersion,
 		PluginId:     pluginmeta.ID,
 		Version:      server.version,
-		Capabilities: []string{},
+		Capabilities: []string{nodepluginv1.CapabilityServiceControl, nodepluginv1.CapabilityTrafficCounters},
+	}, nil
+}
+
+func (server *Server) CollectTelemetry(ctx context.Context, request *nodepluginv1.CollectTelemetryRequest) (*nodepluginv1.CollectTelemetryResponse, error) {
+	if err := nodepluginv1.ValidateCollectTelemetryRequest(request); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid telemetry request")
+	}
+	values, err := server.runtime.CollectTraffic(ctx)
+	if err != nil {
+		if errors.Is(err, xrayruntime.ErrRuntimeUnavailable) {
+			return nil, status.Error(codes.FailedPrecondition, "Xray runtime is unavailable")
+		}
+		return nil, status.Error(codes.Unavailable, "Xray traffic collection failed")
+	}
+	response := &nodepluginv1.CollectTelemetryResponse{
+		ObservedAtUnixNano: time.Now().UTC().UnixNano(),
+		Counters:           make([]*nodepluginv1.TrafficCounter, len(values)),
+		NextSequence:       request.AfterSequence,
+	}
+	for index, value := range values {
+		response.Counters[index] = &nodepluginv1.TrafficCounter{
+			AuthorizationId: value.AuthorizationID,
+			ServiceId:       value.ServiceID,
+			CounterEpoch:    value.CounterEpoch,
+			UploadBytes:     value.UploadBytes,
+			DownloadBytes:   value.DownloadBytes,
+		}
+	}
+	if err := nodepluginv1.ValidateCollectTelemetryResponse(request, response); err != nil {
+		return nil, status.Error(codes.Internal, "Xray returned invalid traffic counters")
+	}
+	return response, nil
+}
+
+func (server *Server) SetServiceState(ctx context.Context, request *nodepluginv1.SetServiceStateRequest) (*nodepluginv1.SetServiceStateResponse, error) {
+	if err := nodepluginv1.ValidateSetServiceStateRequest(request); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid service state request")
+	}
+	if err := server.runtime.ApplyServiceState(ctx, request.PolicyGeneration, request.StateRevision,
+		request.AuthorizationId, request.ServiceId, request.Enabled); err != nil {
+		switch {
+		case errors.Is(err, xrayruntime.ErrUnsupportedService):
+			return nil, status.Error(codes.InvalidArgument, "unsupported Xray service")
+		case errors.Is(err, xrayruntime.ErrRuntimeUnavailable), errors.Is(err, xrayruntime.ErrServiceDisabled):
+			return nil, status.Error(codes.FailedPrecondition, "Xray service is unavailable")
+		case errors.Is(err, xrayruntime.ErrServiceStateConflict):
+			return nil, status.Error(codes.Aborted, "Xray service state revision changed")
+		default:
+			return nil, status.Error(codes.Unavailable, "Xray service state update failed")
+		}
+	}
+	return &nodepluginv1.SetServiceStateResponse{
+		PolicyGeneration: request.PolicyGeneration,
+		StateRevision:    request.StateRevision,
+		AuthorizationId:  request.AuthorizationId,
+		ServiceId:        request.ServiceId,
+		Enabled:          request.Enabled,
+		Reason:           request.Reason,
 	}, nil
 }
 

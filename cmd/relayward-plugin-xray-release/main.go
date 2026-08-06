@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 	"github.com/Relayward/relayward-sdk/contract"
 	"github.com/Relayward/relayward-sdk/manifest"
 
@@ -28,6 +29,7 @@ func main() {
 		fatal("invalid version: %v", err)
 	}
 	agentAPI := uint32(contract.AgentAPIMajor)
+	uiAPI := uint32(contract.UIAPIMajor)
 	value := manifest.Manifest{
 		APIVersion: contract.ManifestAPIVersion,
 		ID:         pluginmeta.ID,
@@ -37,8 +39,13 @@ func main() {
 		Requires: manifest.Requirements{
 			ControlAPI: contract.ControlAPIMajor,
 			AgentAPI:   &agentAPI,
+			UIAPI:      &uiAPI,
 		},
-		Permissions: []manifest.Permission{},
+		Permissions: []manifest.Permission{
+			{Name: centerpluginv1.PermissionNodeConfigure, Reason: "Read and publish the Xray plugin configuration for managed nodes."},
+			{Name: centerpluginv1.PermissionNodesRead, Reason: "List managed nodes in the Xray configuration page."},
+			{Name: centerpluginv1.PermissionServicesWrite, Reason: "Publish Xray services that can be bound to node authorizations."},
+		},
 	}
 	for _, artifact := range []struct {
 		role manifest.ArtifactRole
@@ -46,6 +53,7 @@ func main() {
 	}{
 		{role: manifest.ArtifactCenter, name: "relayward-plugin-xray-center-linux-amd64"},
 		{role: manifest.ArtifactNode, name: "relayward-plugin-xray-node-linux-amd64"},
+		{role: manifest.ArtifactUI, name: "relayward-plugin-xray-ui.tar.gz"},
 	} {
 		description, err := describeArtifact(filepath.Join(*directory, artifact.name), artifact.role, artifact.name)
 		if err != nil {
@@ -79,9 +87,12 @@ func describeArtifact(path string, role manifest.ArtifactRole, name string) (man
 	if _, err := io.Copy(hash, file); err != nil {
 		return manifest.Artifact{}, fmt.Errorf("hash %s artifact: %w", role, err)
 	}
-	return manifest.Artifact{
-		Role: role, File: name, Size: info.Size(), SHA256: hex.EncodeToString(hash.Sum(nil)), OS: "linux", Arch: "amd64",
-	}, nil
+	result := manifest.Artifact{Role: role, File: name, Size: info.Size(), SHA256: hex.EncodeToString(hash.Sum(nil))}
+	if role == manifest.ArtifactCenter || role == manifest.ArtifactNode {
+		result.OS = "linux"
+		result.Arch = "amd64"
+	}
+	return result, nil
 }
 
 func fatal(format string, values ...any) {

@@ -3,6 +3,8 @@ package xrayruntime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +45,7 @@ type Manager struct {
 	dataDirectory string
 	installer     Installer
 	startupGrace  time.Duration
+	connectAPI    func(context.Context, config.Configuration) (runtimeAPI, error)
 
 	operation  sync.Mutex
 	state      sync.Mutex
@@ -50,21 +53,45 @@ type Manager struct {
 	running    *runtimeSpec
 	generation uint64
 	digest     string
+	epoch      string
+	services   map[string]*serviceState
 }
 
 type runtimeSpec struct {
-	installation xrayrelease.Installation
-	configPath   string
+	installation  xrayrelease.Installation
+	configPath    string
+	configuration config.Configuration
+}
+
+type serviceState struct {
+	authorizationID  string
+	serviceID        string
+	enabled          bool
+	policyGeneration uint64
+	stateRevision    uint64
+	uploadBase       uint64
+	downloadBase     uint64
+	uploadRaw        uint64
+	downloadRaw      uint64
 }
 
 type managedProcess struct {
 	command   *exec.Cmd
+	api       runtimeAPI
 	done      chan struct{}
 	waitError error
 }
 
 func NewManager(dataDirectory string, installer Installer) *Manager {
-	return &Manager{dataDirectory: dataDirectory, installer: installer, startupGrace: defaultStartupGrace}
+	return &Manager{
+		dataDirectory: dataDirectory,
+		installer:     installer,
+		startupGrace:  defaultStartupGrace,
+		connectAPI: func(ctx context.Context, configuration config.Configuration) (runtimeAPI, error) {
+			return connectXrayAPI(ctx, configuration)
+		},
+		services: make(map[string]*serviceState),
+	}
 }
 
 func (manager *Manager) Validate(ctx context.Context, configuration config.Configuration) error {
@@ -74,7 +101,11 @@ func (manager *Manager) Validate(ctx context.Context, configuration config.Confi
 	if err != nil {
 		return err
 	}
-	configPath, cleanup, err := manager.writeTemporaryConfiguration(configuration.XrayConfig)
+	raw, err := configuration.XrayJSON()
+	if err != nil {
+		return err
+	}
+	configPath, cleanup, err := manager.writeTemporaryConfiguration(raw)
 	if err != nil {
 		return err
 	}
@@ -85,11 +116,23 @@ func (manager *Manager) Validate(ctx context.Context, configuration config.Confi
 func (manager *Manager) Apply(ctx context.Context, generation uint64, digest string, configuration config.Configuration) error {
 	manager.operation.Lock()
 	defer manager.operation.Unlock()
+	candidateEpoch := manager.epoch
+	if candidateEpoch == "" {
+		var err error
+		candidateEpoch, err = newCounterEpoch()
+		if err != nil {
+			return err
+		}
+	}
 	installation, err := manager.installer.Ensure(ctx, configuration.XrayVersion)
 	if err != nil {
 		return err
 	}
-	configPath, cleanup, err := manager.writeTemporaryConfiguration(configuration.XrayConfig)
+	raw, err := configuration.XrayJSON()
+	if err != nil {
+		return err
+	}
+	configPath, cleanup, err := manager.writeTemporaryConfiguration(raw)
 	if err != nil {
 		return err
 	}
@@ -101,13 +144,19 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 	if err != nil {
 		return err
 	}
-	candidate := &runtimeSpec{installation: installation, configPath: stablePath}
+	candidate := &runtimeSpec{installation: installation, configPath: stablePath, configuration: configuration}
 
 	manager.state.Lock()
 	previousProcess := manager.process
 	previousSpec := manager.running
 	manager.state.Unlock()
 	if previousProcess != nil {
+		if err := manager.refreshTraffic(ctx, previousProcess); err != nil {
+			return fmt.Errorf("collect final Xray traffic before restart: %w", err)
+		}
+		if err := manager.rollTrafficForward(); err != nil {
+			return err
+		}
 		stopContext, cancel := context.WithTimeout(ctx, processStopTimeout)
 		err := previousProcess.stop(stopContext)
 		cancel()
@@ -115,7 +164,7 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 			return fmt.Errorf("stop current Xray process: %w", err)
 		}
 	}
-	candidateProcess, err := manager.start(ctx, candidate)
+	candidateProcess, err := manager.startConfigured(ctx, candidate)
 	if err != nil {
 		restored := manager.restore(previousSpec)
 		manager.state.Lock()
@@ -136,6 +185,7 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 	manager.generation = generation
 	manager.digest = digest
 	manager.state.Unlock()
+	manager.epoch = candidateEpoch
 	return nil
 }
 
@@ -174,11 +224,33 @@ func (manager *Manager) restore(spec *runtimeSpec) *managedProcess {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), processStopTimeout)
 	defer cancel()
-	process, err := manager.start(ctx, spec)
+	process, err := manager.startConfigured(ctx, spec)
 	if err != nil {
 		return nil
 	}
 	return process
+}
+
+func (manager *Manager) startConfigured(ctx context.Context, spec *runtimeSpec) (*managedProcess, error) {
+	process, err := manager.start(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	api, err := manager.connectAPI(ctx, spec.configuration)
+	if err != nil {
+		stopContext, cancel := context.WithTimeout(context.Background(), processStopTimeout)
+		defer cancel()
+		_ = process.stop(stopContext)
+		return nil, err
+	}
+	process.api = api
+	if err := manager.restoreServices(ctx, spec, api); err != nil {
+		stopContext, cancel := context.WithTimeout(context.Background(), processStopTimeout)
+		defer cancel()
+		_ = process.stop(stopContext)
+		return nil, err
+	}
+	return process, nil
 }
 
 func (manager *Manager) start(ctx context.Context, spec *runtimeSpec) (*managedProcess, error) {
@@ -212,6 +284,14 @@ func (manager *Manager) start(ctx context.Context, spec *runtimeSpec) (*managedP
 	case <-timer.C:
 		return process, nil
 	}
+}
+
+func newCounterEpoch() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate traffic counter epoch: %w", err)
+	}
+	return hex.EncodeToString(value), nil
 }
 
 func (manager *Manager) writeTemporaryConfiguration(raw []byte) (string, func(), error) {
@@ -327,6 +407,10 @@ func (process *managedProcess) exited() bool {
 }
 
 func (process *managedProcess) stop(ctx context.Context) error {
+	if process != nil && process.api != nil {
+		process.api.close()
+		process.api = nil
+	}
 	if process == nil || process.command == nil || process.command.Process == nil || process.exited() {
 		return nil
 	}

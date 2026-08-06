@@ -15,6 +15,7 @@ import (
 	"github.com/Relayward/relayward-sdk/contract"
 	nodepluginv1 "github.com/Relayward/relayward-sdk/nodeplugin/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/Relayward/relayward-plugin-xray/internal/center"
 	"github.com/Relayward/relayward-plugin-xray/internal/node"
@@ -58,16 +59,27 @@ func runCenter(socketPath string) error {
 	if os.Getenv(centerpluginv1.EnvironmentPluginID) != pluginmeta.ID {
 		return errors.New("unexpected center plugin identity")
 	}
-	if !filepath.IsAbs(socketPath) {
-		return errors.New("center plugin socket must be absolute")
+	hostSocket := os.Getenv(centerpluginv1.EnvironmentHostSocket)
+	if !filepath.IsAbs(socketPath) || !filepath.IsAbs(hostSocket) {
+		return errors.New("center plugin and Host sockets must be absolute")
 	}
 	listener, err := pluginsocket.Listen(socketPath)
 	if err != nil {
 		return err
 	}
+	connection, err := grpc.NewClient("passthrough:///relayward-plugin-host",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", hostSocket)
+		}),
+	)
+	if err != nil {
+		listener.Close()
+		return fmt.Errorf("create Relayward Host client: %w", err)
+	}
 	server := grpc.NewServer()
-	centerpluginv1.RegisterCenterPluginServer(server, center.New(version))
-	return serve(listener, server, nil)
+	centerpluginv1.RegisterCenterPluginServer(server, center.New(version, centerpluginv1.NewPluginHostClient(connection)))
+	return serve(listener, server, connection.Close)
 }
 
 func runNode(socketPath string) error {
