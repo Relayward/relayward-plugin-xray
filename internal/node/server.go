@@ -122,6 +122,8 @@ func (server *Server) ReplaceDynamicBlocks(ctx context.Context, request *nodeplu
 		switch {
 		case errors.Is(err, xrayruntime.ErrUnsupportedService):
 			return nil, status.Error(codes.InvalidArgument, "unsupported Xray service")
+		case errors.Is(err, xrayruntime.ErrServiceDisabled):
+			return nil, status.Error(codes.FailedPrecondition, "Xray service is disabled")
 		case errors.Is(err, xrayruntime.ErrRuntimeUnavailable):
 			return nil, status.Error(codes.FailedPrecondition, "Xray runtime is unavailable")
 		case errors.Is(err, xrayruntime.ErrDynamicBlockConflict):

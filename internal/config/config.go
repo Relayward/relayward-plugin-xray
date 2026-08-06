@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -24,8 +25,9 @@ import (
 )
 
 const (
-	VLESSRealityServiceID = "vless-reality"
-	VLESSVisionFlow       = "xtls-rprx-vision"
+	ServiceTypeVLESSReality = "vless-reality"
+	VLESSVisionFlow         = "xtls-rprx-vision"
+	MaximumServices         = 64
 )
 
 var (
@@ -34,13 +36,14 @@ var (
 )
 
 type Configuration struct {
-	XrayVersion    string       `json:"xray_version"`
-	APIPort        uint16       `json:"api_port"`
-	CredentialSeed string       `json:"credential_seed"`
-	VLESSReality   VLESSReality `json:"vless_reality"`
+	XrayVersion    string    `json:"xray_version"`
+	APIPort        uint16    `json:"api_port"`
+	CredentialSeed string    `json:"credential_seed"`
+	Services       []Service `json:"services"`
 }
 
-type VLESSReality struct {
+type Service struct {
+	Type        string   `json:"type"`
 	Enabled     bool     `json:"enabled"`
 	ServiceID   string   `json:"service_id"`
 	DisplayName string   `json:"display_name"`
@@ -56,13 +59,15 @@ type VLESSReality struct {
 }
 
 type EditableConfiguration struct {
-	XrayVersion  string               `json:"xray_version"`
-	APIPort      uint16               `json:"api_port"`
-	VLESSReality EditableVLESSReality `json:"vless_reality"`
+	XrayVersion string            `json:"xray_version"`
+	APIPort     uint16            `json:"api_port"`
+	Services    []EditableService `json:"services"`
 }
 
-type EditableVLESSReality struct {
+type EditableService struct {
+	Type        string `json:"type"`
 	Enabled     bool   `json:"enabled"`
+	ServiceID   string `json:"service_id"`
 	DisplayName string `json:"display_name"`
 	Listen      string `json:"listen"`
 	Port        uint16 `json:"port"`
@@ -73,46 +78,71 @@ type EditableVLESSReality struct {
 }
 
 func Editable(value Configuration) EditableConfiguration {
-	serverName := ""
-	if len(value.VLESSReality.ServerNames) > 0 {
-		serverName = value.VLESSReality.ServerNames[0]
+	services := make([]EditableService, len(value.Services))
+	for index, service := range value.Services {
+		serverName := ""
+		if len(service.ServerNames) > 0 {
+			serverName = service.ServerNames[0]
+		}
+		services[index] = EditableService{
+			Type: service.Type, Enabled: service.Enabled, ServiceID: service.ServiceID,
+			DisplayName: service.DisplayName, Listen: service.Listen, Port: service.Port,
+			PublicPort: service.PublicPort, Target: service.Target, ServerName: serverName,
+			Fingerprint: service.Fingerprint,
+		}
 	}
-	return EditableConfiguration{
-		XrayVersion: value.XrayVersion,
-		APIPort:     value.APIPort,
-		VLESSReality: EditableVLESSReality{
-			Enabled: value.VLESSReality.Enabled, DisplayName: value.VLESSReality.DisplayName,
-			Listen: value.VLESSReality.Listen, Port: value.VLESSReality.Port,
-			PublicPort: value.VLESSReality.PublicPort, Target: value.VLESSReality.Target,
-			ServerName: serverName, Fingerprint: value.VLESSReality.Fingerprint,
-		},
-	}
+	return EditableConfiguration{XrayVersion: value.XrayVersion, APIPort: value.APIPort, Services: services}
+}
+
+func NewConfiguration(xrayVersion string, apiPort uint16, services []EditableService) (Configuration, error) {
+	return NewFromEditable(EditableConfiguration{XrayVersion: xrayVersion, APIPort: apiPort, Services: services})
 }
 
 func NewFromEditable(value EditableConfiguration) (Configuration, error) {
-	configuration, err := NewConfiguration(value.XrayVersion, value.APIPort, value.VLESSReality.Port,
-		value.VLESSReality.PublicPort, value.VLESSReality.Target, value.VLESSReality.ServerName)
+	seed, err := randomKey()
 	if err != nil {
 		return Configuration{}, err
 	}
+	configuration := Configuration{CredentialSeed: seed}
 	return MergeEditable(configuration, value)
 }
 
 func MergeEditable(configuration Configuration, value EditableConfiguration) (Configuration, error) {
+	existing := make(map[string]Service, len(configuration.Services))
+	for _, service := range configuration.Services {
+		existing[service.ServiceID] = service
+	}
+	services := make([]Service, len(value.Services))
+	for index, editable := range value.Services {
+		service, exists := existing[editable.ServiceID]
+		if !exists || service.Type != editable.Type {
+			var err error
+			service, err = newServiceSecrets()
+			if err != nil {
+				return Configuration{}, err
+			}
+		}
+		service.Type = editable.Type
+		service.Enabled = editable.Enabled
+		service.ServiceID = editable.ServiceID
+		service.DisplayName = editable.DisplayName
+		service.Listen = editable.Listen
+		service.Port = editable.Port
+		service.PublicPort = editable.PublicPort
+		service.Target = editable.Target
+		service.ServerNames = []string{editable.ServerName}
+		service.Flow = VLESSVisionFlow
+		service.Fingerprint = editable.Fingerprint
+		services[index] = service
+	}
 	configuration.XrayVersion = value.XrayVersion
 	configuration.APIPort = value.APIPort
-	configuration.VLESSReality.Enabled = value.VLESSReality.Enabled
-	configuration.VLESSReality.DisplayName = value.VLESSReality.DisplayName
-	configuration.VLESSReality.Listen = value.VLESSReality.Listen
-	configuration.VLESSReality.Port = value.VLESSReality.Port
-	configuration.VLESSReality.PublicPort = value.VLESSReality.PublicPort
-	configuration.VLESSReality.Target = value.VLESSReality.Target
-	configuration.VLESSReality.ServerNames = []string{value.VLESSReality.ServerName}
-	configuration.VLESSReality.Fingerprint = value.VLESSReality.Fingerprint
+	sort.Slice(services, func(i, j int) bool { return services[i].ServiceID < services[j].ServiceID })
+	configuration.Services = services
 	if err := Validate(configuration); err != nil {
 		return Configuration{}, err
 	}
-	return configuration, nil
+	return clone(configuration), nil
 }
 
 func Decode(raw []byte) (Configuration, error) {
@@ -128,9 +158,7 @@ func Decode(raw []byte) (Configuration, error) {
 	if err := Validate(value); err != nil {
 		return Configuration{}, err
 	}
-	value.VLESSReality.ServerNames = append([]string(nil), value.VLESSReality.ServerNames...)
-	value.VLESSReality.ShortIDs = append([]string(nil), value.VLESSReality.ShortIDs...)
-	return value, nil
+	return clone(value), nil
 }
 
 func Validate(value Configuration) error {
@@ -146,99 +174,99 @@ func Validate(value Configuration) error {
 	if _, err := decodeKey("credential_seed", value.CredentialSeed); err != nil {
 		return err
 	}
-	service := value.VLESSReality
-	if service.ServiceID != VLESSRealityServiceID || !serviceIDPattern.MatchString(service.ServiceID) {
-		return fmt.Errorf("vless_reality.service_id: must be %q", VLESSRealityServiceID)
+	if len(value.Services) > MaximumServices {
+		return fmt.Errorf("services: must contain at most %d services", MaximumServices)
 	}
+	seenIDs := make(map[string]struct{}, len(value.Services))
+	for index, service := range value.Services {
+		field := fmt.Sprintf("services[%d]", index)
+		if service.Type != ServiceTypeVLESSReality {
+			return fmt.Errorf("%s.type: unsupported service type", field)
+		}
+		if !serviceIDPattern.MatchString(service.ServiceID) {
+			return fmt.Errorf("%s.service_id: must match %s", field, serviceIDPattern)
+		}
+		if _, exists := seenIDs[service.ServiceID]; exists {
+			return fmt.Errorf("%s.service_id: duplicate service ID", field)
+		}
+		seenIDs[service.ServiceID] = struct{}{}
+		if index > 0 && value.Services[index-1].ServiceID > service.ServiceID {
+			return fmt.Errorf("%s.service_id: services must be sorted by service ID", field)
+		}
+		if err := validateService(value.APIPort, service, field); err != nil {
+			return err
+		}
+		for previousIndex := 0; previousIndex < index; previousIndex++ {
+			previous := value.Services[previousIndex]
+			if service.Port == previous.Port && listenersOverlap(service.Listen, previous.Listen) {
+				return fmt.Errorf("%s.port: conflicts with services[%d]", field, previousIndex)
+			}
+		}
+	}
+	return nil
+}
+
+func validateService(apiPort uint16, service Service, field string) error {
 	if err := validateDisplayName(service.DisplayName); err != nil {
-		return fmt.Errorf("vless_reality.display_name: %w", err)
+		return fmt.Errorf("%s.display_name: %w", field, err)
 	}
 	listen, err := netip.ParseAddr(service.Listen)
 	if err != nil || listen.String() != service.Listen {
-		return fmt.Errorf("vless_reality.listen: must be a canonical IP address")
+		return fmt.Errorf("%s.listen: must be a canonical IP address", field)
 	}
 	if service.Port == 0 || service.PublicPort == 0 {
-		return fmt.Errorf("vless_reality.port and public_port: must be between 1 and 65535")
+		return fmt.Errorf("%s.port and public_port: must be between 1 and 65535", field)
 	}
-	if service.Port == value.APIPort && (listen.IsLoopback() || listen.IsUnspecified()) {
-		return fmt.Errorf("vless_reality.port: conflicts with the local API port")
+	if service.Port == apiPort && (listen.IsLoopback() || listen.IsUnspecified()) {
+		return fmt.Errorf("%s.port: conflicts with the local API port", field)
 	}
 	targetHost, targetPort, err := net.SplitHostPort(service.Target)
 	parsedTargetPort, portErr := strconv.ParseUint(targetPort, 10, 16)
 	if err != nil || portErr != nil || parsedTargetPort == 0 || !validServerName(targetHost) {
-		return fmt.Errorf("vless_reality.target: must be a domain and port")
+		return fmt.Errorf("%s.target: must be a domain and port", field)
 	}
 	if len(service.ServerNames) == 0 || len(service.ServerNames) > 16 {
-		return fmt.Errorf("vless_reality.server_names: must contain 1 to 16 values")
+		return fmt.Errorf("%s.server_names: must contain 1 to 16 values", field)
 	}
 	seenNames := make(map[string]struct{}, len(service.ServerNames))
 	for index, name := range service.ServerNames {
 		if !validServerName(name) {
-			return fmt.Errorf("vless_reality.server_names[%d]: invalid server name", index)
+			return fmt.Errorf("%s.server_names[%d]: invalid server name", field, index)
 		}
 		if _, exists := seenNames[name]; exists {
-			return fmt.Errorf("vless_reality.server_names[%d]: duplicate server name", index)
+			return fmt.Errorf("%s.server_names[%d]: duplicate server name", field, index)
 		}
 		seenNames[name] = struct{}{}
 	}
 	if _, err := RealityPublicKey(service.PrivateKey); err != nil {
-		return fmt.Errorf("vless_reality.private_key: %w", err)
+		return fmt.Errorf("%s.private_key: %w", field, err)
 	}
 	if len(service.ShortIDs) == 0 || len(service.ShortIDs) > 16 {
-		return fmt.Errorf("vless_reality.short_ids: must contain 1 to 16 values")
+		return fmt.Errorf("%s.short_ids: must contain 1 to 16 values", field)
 	}
 	seenShortIDs := make(map[string]struct{}, len(service.ShortIDs))
 	for index, shortID := range service.ShortIDs {
 		decoded, err := hex.DecodeString(shortID)
 		if err != nil || len(decoded) < 1 || len(decoded) > 8 {
-			return fmt.Errorf("vless_reality.short_ids[%d]: must contain 2 to 16 lowercase hexadecimal characters", index)
+			return fmt.Errorf("%s.short_ids[%d]: must contain 2 to 16 lowercase hexadecimal characters", field, index)
 		}
 		if shortID != strings.ToLower(shortID) {
-			return fmt.Errorf("vless_reality.short_ids[%d]: must use lowercase hexadecimal", index)
+			return fmt.Errorf("%s.short_ids[%d]: must use lowercase hexadecimal", field, index)
 		}
 		if _, exists := seenShortIDs[shortID]; exists {
-			return fmt.Errorf("vless_reality.short_ids[%d]: duplicate short ID", index)
+			return fmt.Errorf("%s.short_ids[%d]: duplicate short ID", field, index)
 		}
 		seenShortIDs[shortID] = struct{}{}
 	}
 	if service.Flow != VLESSVisionFlow {
-		return fmt.Errorf("vless_reality.flow: must be %q", VLESSVisionFlow)
+		return fmt.Errorf("%s.flow: must be %q", field, VLESSVisionFlow)
 	}
 	switch service.Fingerprint {
 	case "chrome", "firefox", "safari", "ios", "android", "edge", "random", "randomized":
 	default:
-		return fmt.Errorf("vless_reality.fingerprint: unsupported fingerprint")
+		return fmt.Errorf("%s.fingerprint: unsupported fingerprint", field)
 	}
 	return nil
-}
-
-func NewConfiguration(xrayVersion string, apiPort, port, publicPort uint16, target, serverName string) (Configuration, error) {
-	seed := make([]byte, 32)
-	privateKey := make([]byte, 32)
-	shortID := make([]byte, 8)
-	for _, value := range [][]byte{seed, privateKey, shortID} {
-		if _, err := rand.Read(value); err != nil {
-			return Configuration{}, fmt.Errorf("generate configuration secret: %w", err)
-		}
-	}
-	privateKey[0] &= 248
-	privateKey[31] &= 127
-	privateKey[31] |= 64
-	value := Configuration{
-		XrayVersion:    xrayVersion,
-		APIPort:        apiPort,
-		CredentialSeed: base64.RawURLEncoding.EncodeToString(seed),
-		VLESSReality: VLESSReality{
-			Enabled: true, ServiceID: VLESSRealityServiceID, DisplayName: "VLESS Reality",
-			Listen: "0.0.0.0", Port: port, PublicPort: publicPort, Target: target,
-			ServerNames: []string{serverName}, PrivateKey: base64.RawURLEncoding.EncodeToString(privateKey),
-			ShortIDs: []string{hex.EncodeToString(shortID)}, Flow: VLESSVisionFlow, Fingerprint: "chrome",
-		},
-	}
-	if err := Validate(value); err != nil {
-		return Configuration{}, err
-	}
-	return value, nil
 }
 
 func Encode(value Configuration) ([]byte, error) {
@@ -252,16 +280,27 @@ func Encode(value Configuration) ([]byte, error) {
 	return raw, nil
 }
 
+func (value Configuration) FindService(serviceID string) (Service, bool) {
+	for _, service := range value.Services {
+		if service.ServiceID == serviceID {
+			return service, true
+		}
+	}
+	return Service{}, false
+}
+
 func (value Configuration) XrayJSON() ([]byte, error) {
 	if err := Validate(value); err != nil {
 		return nil, err
 	}
-	service := value.VLESSReality
 	inbounds := []any{map[string]any{
 		"tag": "relayward-api", "listen": "127.0.0.1", "port": value.APIPort,
 		"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
 	}}
-	if service.Enabled {
+	for _, service := range value.Services {
+		if !service.Enabled {
+			continue
+		}
 		inbounds = append(inbounds, map[string]any{
 			"tag": service.ServiceID, "listen": service.Listen, "port": service.Port, "protocol": "vless",
 			"settings": map[string]any{"clients": []any{}, "decryption": "none"},
@@ -327,6 +366,49 @@ func RealityPublicKey(privateKey string) (string, error) {
 
 func UserEmail(authorizationID, serviceID string) string {
 	return "relayward:" + authorizationID + ":" + serviceID
+}
+
+func newServiceSecrets() (Service, error) {
+	privateKey := make([]byte, 32)
+	shortID := make([]byte, 8)
+	for _, value := range [][]byte{privateKey, shortID} {
+		if _, err := rand.Read(value); err != nil {
+			return Service{}, fmt.Errorf("generate configuration secret: %w", err)
+		}
+	}
+	privateKey[0] &= 248
+	privateKey[31] &= 127
+	privateKey[31] |= 64
+	return Service{
+		PrivateKey: base64.RawURLEncoding.EncodeToString(privateKey),
+		ShortIDs:   []string{hex.EncodeToString(shortID)},
+	}, nil
+}
+
+func randomKey() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate configuration secret: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func clone(value Configuration) Configuration {
+	value.Services = append([]Service(nil), value.Services...)
+	for index := range value.Services {
+		value.Services[index].ServerNames = append([]string(nil), value.Services[index].ServerNames...)
+		value.Services[index].ShortIDs = append([]string(nil), value.Services[index].ShortIDs...)
+	}
+	return value
+}
+
+func listenersOverlap(first, second string) bool {
+	firstAddress, firstErr := netip.ParseAddr(first)
+	secondAddress, secondErr := netip.ParseAddr(second)
+	if firstErr != nil || secondErr != nil {
+		return false
+	}
+	return firstAddress == secondAddress || firstAddress.IsUnspecified() || secondAddress.IsUnspecified()
 }
 
 func decodeKey(field, value string) ([]byte, error) {

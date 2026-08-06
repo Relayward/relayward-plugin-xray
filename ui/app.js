@@ -11,28 +11,48 @@ const messages = {
   "Not selected": "未选择",
   "Node": "节点",
   "Refresh": "刷新",
-  "Service": "服务",
-  "Network": "网络",
+  "Services": "服务",
   "Runtime": "运行时",
-  "VLESS REALITY": "VLESS REALITY",
-  "Service identity and client defaults": "服务标识与客户端默认值",
-  "Enabled": "已启用",
-  "Display name": "显示名称",
+  "Proxy services": "代理服务",
+  "Independent listeners published by this node": "此节点发布的独立监听服务",
+  "Add service": "新增服务",
+  "No services configured": "尚未配置服务",
+  "Add a service to publish an Xray inbound": "新增服务后即可发布 Xray 入站",
+  "Local runtime": "本地运行时",
+  "Xray release and private control endpoint": "Xray 版本与私有控制端点",
   "Xray version": "Xray 版本",
+  "Local API port": "本地 API 端口",
+  "Supported transport": "支持的传输组合",
+  "Save configuration": "保存配置",
+  "No nodes available": "暂无可用节点",
+  "Configure one independent VLESS REALITY listener": "配置一个独立的 VLESS REALITY 监听服务",
+  "Identity": "标识",
+  "Enabled": "已启用",
+  "Service ID": "服务 ID",
+  "Service ID already exists.": "服务 ID 已存在。",
+  "A node can contain at most 64 services.": "一个节点最多可配置 64 个服务。",
+  "Display name": "显示名称",
+  "Service type": "服务类型",
   "Client fingerprint": "客户端指纹",
   "Listener and REALITY": "监听与 REALITY",
-  "Inbound ports and handshake target": "入站端口与握手目标",
   "Listen address": "监听地址",
   "Listen port": "监听端口",
   "Public port": "公网端口",
   "REALITY target": "REALITY 目标",
   "Server name": "服务器名称",
-  "Local runtime": "本地运行时",
-  "Private control endpoint": "私有控制端点",
-  "Local API port": "本地 API 端口",
-  "Transport": "传输组合",
-  "Save configuration": "保存配置",
-  "No nodes available": "暂无可用节点",
+  "Cancel": "取消",
+  "Apply service": "应用服务",
+  "Add proxy service": "新增代理服务",
+  "Edit proxy service": "编辑代理服务",
+  "Edit": "编辑",
+  "Delete": "删除",
+  "Enabled status": "已启用",
+  "Disabled status": "已停用",
+  "Listen {address}:{port}": "监听 {address}:{port}",
+  "Public port {port}": "公网端口 {port}",
+  "Delete service": "删除服务",
+  "Delete {name}? The change is published only after you save the configuration.": "删除 {name}？只有保存配置后，此更改才会发布。",
+  "Service changes are ready. Save the configuration to publish them.": "服务更改已就绪，保存配置后发布。",
   "Online": "在线",
   "Offline": "离线",
   "Generation {generation}": "第 {generation} 代配置",
@@ -41,12 +61,15 @@ const messages = {
   "Loading...": "正在加载...",
   "Saving...": "正在保存...",
   "The request could not be completed.": "请求未能完成。",
+  "Close": "关闭",
 };
 
 let locale = "en";
 let nodes = [];
 let selectedNode;
 let stored;
+let services = [];
+let editingServiceID = null;
 let busy = false;
 
 function text(message, values = {}) {
@@ -60,8 +83,11 @@ function translatePage() {
   for (const element of document.querySelectorAll("[data-i18n]")) {
     element.textContent = text(element.dataset.i18n);
   }
+  elements.closeServiceDialog.title = text("Close");
+  elements.closeServiceDialog.setAttribute("aria-label", text("Close"));
   updateNodeStatus();
   updateGeneration();
+  renderServices();
 }
 
 function showError(cause) {
@@ -75,12 +101,20 @@ function clearMessages() {
   elements.error.hidden = true;
 }
 
+function showPendingNotice() {
+  elements.notice.textContent = text("Service changes are ready. Save the configuration to publish them.");
+  elements.notice.hidden = false;
+  elements.error.hidden = true;
+}
+
 function setBusy(value, label) {
   busy = value;
   elements.refreshButton.disabled = value;
   elements.nodeSelect.disabled = value || nodes.length === 0;
   elements.saveButton.disabled = value;
+  elements.addServiceButton.disabled = value;
   elements.saveButton.textContent = value && label === "save" ? text("Saving...") : text("Save configuration");
+  renderServices();
 }
 
 function updateNodeStatus() {
@@ -114,47 +148,103 @@ function numberValue(id) {
   return Number(elements[id].value);
 }
 
-function defaults() {
+function nextServiceDefaults() {
+  let suffix = services.length === 0 ? 1 : 2;
+  let serviceID = services.length === 0 ? "vless-reality" : `vless-reality-${suffix}`;
+  while (services.some((service) => service.service_id === serviceID)) {
+    suffix += 1;
+    serviceID = `vless-reality-${suffix}`;
+  }
+  let port = services.length === 0 ? 443 : 8443;
+  while (services.some((service) => service.port === port) && port < 65535) port += 1;
   return {
+    type: "vless-reality",
     enabled: true,
-    displayName: "VLESS Reality",
-    xrayVersion: "26.3.27",
-    fingerprint: "chrome",
+    service_id: serviceID,
+    display_name: services.length === 0 ? "VLESS Reality" : `VLESS Reality ${services.length + 1}`,
     listen: "0.0.0.0",
-    port: 443,
-    publicPort: 443,
+    port,
+    public_port: port,
     target: "www.cloudflare.com:443",
-    serverName: "www.cloudflare.com",
-    apiPort: 10085,
+    server_name: "www.cloudflare.com",
+    fingerprint: "chrome",
   };
 }
 
-function populateForm() {
+function cloneServices(values) {
+  return values.map((service) => ({ ...service }));
+}
+
+function populateConfiguration() {
   const configuration = stored?.exists ? stored.configuration : undefined;
-  const service = configuration?.vless_reality;
-  const value = configuration == null ? defaults() : {
-    enabled: service.enabled,
-    displayName: service.display_name,
-    xrayVersion: configuration.xray_version,
-    fingerprint: service.fingerprint,
-    listen: service.listen,
-    port: service.port,
-    publicPort: service.public_port,
-    target: service.target,
-    serverName: service.server_name,
-    apiPort: configuration.api_port,
-  };
-  elements.enabled.checked = value.enabled;
-  elements.displayName.value = value.displayName;
-  elements.xrayVersion.value = value.xrayVersion;
-  elements.fingerprint.value = value.fingerprint;
-  elements.listenAddress.value = value.listen;
-  elements.listenPort.value = String(value.port);
-  elements.publicPort.value = String(value.publicPort);
-  elements.realityTarget.value = value.target;
-  elements.serverName.value = value.serverName;
-  elements.apiPort.value = String(value.apiPort);
+  services = [];
+  if (configuration == null) {
+    elements.xrayVersion.value = "26.3.27";
+    elements.apiPort.value = "10085";
+    services = [nextServiceDefaults()];
+  } else {
+    elements.xrayVersion.value = configuration.xray_version;
+    elements.apiPort.value = String(configuration.api_port);
+    services = cloneServices(Array.isArray(configuration.services) ? configuration.services : []);
+  }
+  renderServices();
   updateGeneration();
+}
+
+function serviceStatus(service) {
+  return service.enabled ? text("Enabled status") : text("Disabled status");
+}
+
+function serviceRow(service) {
+  const row = document.createElement("article");
+  row.className = "service-row";
+
+  const identity = document.createElement("div");
+  identity.className = "service-identity";
+  const heading = document.createElement("div");
+  heading.className = "service-name-line";
+  const name = document.createElement("strong");
+  name.textContent = service.display_name;
+  const status = document.createElement("span");
+  status.className = `badge service-status${service.enabled ? " connected" : ""}`;
+  status.textContent = serviceStatus(service);
+  heading.append(name, status);
+  const identifier = document.createElement("span");
+  identifier.className = "service-id";
+  identifier.textContent = service.service_id;
+  identity.append(heading, identifier);
+
+  const network = document.createElement("div");
+  network.className = "service-network";
+  const listener = document.createElement("span");
+  listener.textContent = text("Listen {address}:{port}", { address: service.listen, port: service.port });
+  const publicPort = document.createElement("span");
+  publicPort.textContent = text("Public port {port}", { port: service.public_port });
+  network.append(listener, publicPort);
+
+  const actions = document.createElement("div");
+  actions.className = "service-actions";
+  const edit = document.createElement("button");
+  edit.className = "button button-outline button-compact";
+  edit.type = "button";
+  edit.disabled = busy;
+  edit.textContent = text("Edit");
+  edit.addEventListener("click", () => openServiceDialog(service.service_id));
+  const remove = document.createElement("button");
+  remove.className = "button button-ghost-destructive button-compact";
+  remove.type = "button";
+  remove.disabled = busy;
+  remove.textContent = text("Delete");
+  remove.addEventListener("click", () => void removeService(service.service_id));
+  actions.append(edit, remove);
+
+  row.append(identity, network, actions);
+  return row;
+}
+
+function renderServices() {
+  elements.serviceList.replaceChildren(...services.map(serviceRow));
+  elements.serviceListEmpty.hidden = services.length !== 0;
 }
 
 async function loadConfiguration() {
@@ -163,7 +253,7 @@ async function loadConfiguration() {
   setBusy(true, "load");
   try {
     stored = await client.rpc("configuration.get", { node_id: selectedNode.id });
-    populateForm();
+    populateConfiguration();
   } catch (cause) {
     showError(cause);
   } finally {
@@ -190,16 +280,7 @@ function configurationForSave() {
   return {
     xray_version: elements.xrayVersion.value.trim(),
     api_port: numberValue("api-port"),
-    vless_reality: {
-      enabled: elements.enabled.checked,
-      display_name: elements.displayName.value.trim(),
-      listen: elements.listenAddress.value.trim(),
-      port: numberValue("listen-port"),
-      public_port: numberValue("public-port"),
-      target: elements.realityTarget.value.trim(),
-      server_name: elements.serverName.value.trim(),
-      fingerprint: elements.fingerprint.value,
-    },
+    services: cloneServices(services).sort((first, second) => first.service_id.localeCompare(second.service_id)),
   };
 }
 
@@ -216,7 +297,7 @@ async function saveConfiguration(event) {
       configuration,
     });
     stored = await client.rpc("configuration.get", { node_id: selectedNode.id });
-    populateForm();
+    populateConfiguration();
     elements.notice.textContent = text("Configuration saved.");
     elements.notice.hidden = false;
   } catch (cause) {
@@ -224,6 +305,95 @@ async function saveConfiguration(event) {
   } finally {
     setBusy(false);
   }
+}
+
+function populateServiceDialog(service) {
+  elements.serviceEnabled.checked = service.enabled;
+  elements.serviceId.value = service.service_id;
+  elements.serviceId.disabled = editingServiceID != null;
+  elements.displayName.value = service.display_name;
+  elements.fingerprint.value = service.fingerprint;
+  elements.listenAddress.value = service.listen;
+  elements.listenPort.value = String(service.port);
+  elements.publicPort.value = String(service.public_port);
+  elements.realityTarget.value = service.target;
+  elements.serverName.value = service.server_name;
+  elements.serviceId.setCustomValidity("");
+}
+
+function openServiceDialog(serviceID = null) {
+  if (busy) return;
+  if (serviceID == null && services.length >= 64) {
+    showError(new Error(text("A node can contain at most 64 services.")));
+    return;
+  }
+  editingServiceID = serviceID;
+  const service = serviceID == null ? nextServiceDefaults() : services.find((candidate) => candidate.service_id === serviceID);
+  if (service == null) return;
+  elements.serviceDialogTitle.textContent = text(serviceID == null ? "Add proxy service" : "Edit proxy service");
+  populateServiceDialog(service);
+  elements.serviceDialog.showModal();
+}
+
+function closeServiceDialog() {
+  editingServiceID = null;
+  elements.serviceDialog.close();
+}
+
+function serviceFromDialog() {
+  return {
+    type: "vless-reality",
+    enabled: elements.serviceEnabled.checked,
+    service_id: elements.serviceId.value.trim(),
+    display_name: elements.displayName.value.trim(),
+    listen: elements.listenAddress.value.trim(),
+    port: numberValue("listen-port"),
+    public_port: numberValue("public-port"),
+    target: elements.realityTarget.value.trim(),
+    server_name: elements.serverName.value.trim(),
+    fingerprint: elements.fingerprint.value,
+  };
+}
+
+function applyService(event) {
+  event.preventDefault();
+  const candidate = serviceFromDialog();
+  const duplicate = services.some((service) => service.service_id === candidate.service_id && service.service_id !== editingServiceID);
+  elements.serviceId.setCustomValidity(duplicate ? text("Service ID already exists.") : "");
+  if (!elements.serviceForm.reportValidity()) return;
+  if (editingServiceID == null) {
+    services.push(candidate);
+  } else {
+    const index = services.findIndex((service) => service.service_id === editingServiceID);
+    if (index < 0) return;
+    services[index] = candidate;
+  }
+  services.sort((first, second) => first.service_id.localeCompare(second.service_id));
+  closeServiceDialog();
+  renderServices();
+  showPendingNotice();
+}
+
+async function removeService(serviceID) {
+  if (busy) return;
+  const service = services.find((candidate) => candidate.service_id === serviceID);
+  if (service == null) return;
+  let confirmed;
+  try {
+    confirmed = await client.confirm({
+      title: text("Delete service"),
+      message: text("Delete {name}? The change is published only after you save the configuration.", { name: service.display_name }),
+      confirm_label: text("Delete"),
+      destructive: true,
+    });
+  } catch (cause) {
+    showError(cause);
+    return;
+  }
+  if (!confirmed) return;
+  services = services.filter((candidate) => candidate.service_id !== serviceID);
+  renderServices();
+  showPendingNotice();
 }
 
 function selectTab(button) {
@@ -242,6 +412,11 @@ elements.nodeSelect.addEventListener("change", () => {
   void loadConfiguration();
 });
 elements.refreshButton.addEventListener("click", () => void refreshNodes());
+elements.addServiceButton.addEventListener("click", () => openServiceDialog());
+elements.closeServiceDialog.addEventListener("click", closeServiceDialog);
+elements.cancelServiceButton.addEventListener("click", closeServiceDialog);
+elements.serviceId.addEventListener("input", () => elements.serviceId.setCustomValidity(""));
+elements.serviceForm.addEventListener("submit", applyService);
 elements.configurationForm.addEventListener("submit", (event) => void saveConfiguration(event));
 window.addEventListener("pagehide", () => client.dispose(), { once: true });
 

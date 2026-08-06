@@ -128,14 +128,15 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 		t.Fatalf("configuration.save = %s, captured %+v, %v", saved.GetJson(), host.configured, err)
 	}
 	storedConfiguration, err := config.Decode(host.configured.Json)
-	if err != nil || storedConfiguration.CredentialSeed == "" || storedConfiguration.VLESSReality.PrivateKey == "" {
+	if err != nil || storedConfiguration.CredentialSeed == "" || len(storedConfiguration.Services) != 2 ||
+		storedConfiguration.Services[0].PrivateKey == "" || len(host.services.Services) != 2 {
 		t.Fatalf("stored configuration = %+v, %v", storedConfiguration, err)
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
 	if err != nil || !json.Valid(loaded.GetJson()) || jsonContainsKey(loaded.Json, "credential_seed") || jsonContainsKey(loaded.Json, "private_key") {
 		t.Fatalf("configuration.get = %s, %v", loaded.GetJson(), err)
 	}
-	configuration.VLESSReality.DisplayName = "Updated VLESS"
+	configuration.Services[0].DisplayName = "Updated VLESS"
 	updateRequest, err := json.Marshal(saveConfigurationRequest{
 		NodeID: nodeID, ExpectedGeneration: 1, Configuration: configuration,
 	})
@@ -147,7 +148,9 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	}
 	updated, err := config.Decode(host.configured.Json)
 	if err != nil || updated.CredentialSeed != storedConfiguration.CredentialSeed ||
-		updated.VLESSReality.PrivateKey != storedConfiguration.VLESSReality.PrivateKey || updated.VLESSReality.DisplayName != "Updated VLESS" {
+		updated.Services[0].PrivateKey != storedConfiguration.Services[0].PrivateKey ||
+		updated.Services[1].PrivateKey != storedConfiguration.Services[1].PrivateKey ||
+		updated.Services[0].DisplayName != "Updated VLESS" {
 		t.Fatalf("updated configuration = %+v, %v", updated, err)
 	}
 }
@@ -198,9 +201,10 @@ func TestRenderSubscription(t *testing.T) {
 	request := &centerpluginv1.RenderSubscriptionRequest{
 		AuthorizationId: "10000000-0000-4000-8000-000000000001",
 		NodeId:          "20000000-0000-4000-8000-000000000002", PublicAddress: "edge.example.com",
-		Services: []*centerpluginv1.SubscriptionServiceBinding{{
-			ServiceId: config.VLESSRealityServiceID, DisplayName: "Edge VLESS",
-		}},
+		Services: []*centerpluginv1.SubscriptionServiceBinding{
+			{ServiceId: "reality-backup", DisplayName: "Edge Backup"},
+			{ServiceId: "reality-main", DisplayName: "Edge Main"},
+		},
 	}
 	response, err := server.RenderSubscription(t.Context(), request)
 	if err != nil {
@@ -213,7 +217,18 @@ func TestRenderSubscription(t *testing.T) {
 
 func testConfigurationJSON(t *testing.T) json.RawMessage {
 	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, 443, 443, "www.microsoft.com:443", "www.microsoft.com")
+	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
+		{
+			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
+			Listen: "0.0.0.0", Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
+			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+		},
+		{
+			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
+			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443, Target: "www.cloudflare.com:443",
+			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

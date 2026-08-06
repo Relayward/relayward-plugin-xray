@@ -199,7 +199,32 @@ func (manager *Manager) Apply(ctx context.Context, generation uint64, digest str
 	manager.digest = digest
 	manager.state.Unlock()
 	manager.epoch = candidateEpoch
+	manager.reconcileConfiguredServices(configuration)
 	return nil
+}
+
+func (manager *Manager) reconcileConfiguredServices(configuration config.Configuration) {
+	for _, state := range manager.services {
+		service, exists := configuration.FindService(state.serviceID)
+		if exists && service.Enabled {
+			continue
+		}
+		state.enabled = false
+		state.policyGeneration = 0
+		state.stateRevision = 0
+	}
+	blocks := manager.blocks[:0]
+	for _, block := range manager.blocks {
+		service, exists := configuration.FindService(block.ServiceID)
+		if exists && service.Enabled {
+			blocks = append(blocks, block)
+		}
+	}
+	if len(blocks) != len(manager.blocks) {
+		manager.blocks = blocks
+		manager.blockPolicyGeneration = 0
+		manager.blockRevision = 0
+	}
 }
 
 func (manager *Manager) GetStatus() Status {
@@ -263,7 +288,7 @@ func (manager *Manager) startConfigured(ctx context.Context, spec *runtimeSpec) 
 		_ = process.stop(stopContext)
 		return nil, err
 	}
-	if err := manager.restoreBlockRules(ctx, api); err != nil {
+	if err := manager.restoreBlockRules(ctx, spec.configuration, api); err != nil {
 		stopContext, cancel := context.WithTimeout(context.Background(), processStopTimeout)
 		defer cancel()
 		_ = process.stop(stopContext)

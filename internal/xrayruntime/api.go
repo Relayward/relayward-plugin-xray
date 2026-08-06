@@ -80,9 +80,6 @@ func (manager *Manager) ApplyServiceState(ctx context.Context, policyGeneration,
 ) error {
 	manager.operation.Lock()
 	defer manager.operation.Unlock()
-	if serviceID != config.VLESSRealityServiceID {
-		return ErrUnsupportedService
-	}
 	manager.state.Lock()
 	spec := manager.running
 	process := manager.process
@@ -90,7 +87,11 @@ func (manager *Manager) ApplyServiceState(ctx context.Context, policyGeneration,
 	if spec == nil || process == nil || process.exited() || process.api == nil {
 		return ErrRuntimeUnavailable
 	}
-	if enabled && !spec.configuration.VLESSReality.Enabled {
+	service, exists := spec.configuration.FindService(serviceID)
+	if !exists {
+		return ErrUnsupportedService
+	}
+	if enabled && !service.Enabled {
 		return ErrServiceDisabled
 	}
 	key := serviceKey(authorizationID, serviceID)
@@ -113,11 +114,11 @@ func (manager *Manager) ApplyServiceState(ctx context.Context, policyGeneration,
 			if err != nil {
 				return err
 			}
-			if err := process.api.addUser(ctx, spec.configuration.VLESSReality.ServiceID, credential); err != nil {
+			if err := process.api.addUser(ctx, service.ServiceID, credential); err != nil {
 				return err
 			}
 		} else if current != nil && current.enabled {
-			if err := process.api.removeUser(ctx, spec.configuration.VLESSReality.ServiceID,
+			if err := process.api.removeUser(ctx, service.ServiceID,
 				config.UserEmail(authorizationID, serviceID)); err != nil {
 				return err
 			}
@@ -180,14 +181,16 @@ func (manager *Manager) CollectActivity(ctx context.Context, after uint64, maxim
 	manager.operation.Lock()
 	defer manager.operation.Unlock()
 	manager.state.Lock()
+	spec := manager.running
 	process := manager.process
 	manager.state.Unlock()
-	if process == nil || process.exited() || process.api == nil {
+	if spec == nil || process == nil || process.exited() || process.api == nil {
 		return ActivityPage{}, ErrRuntimeUnavailable
 	}
 	active := make(map[string]ActivitySource)
 	for _, service := range manager.services {
-		if !service.enabled || service.serviceID != config.VLESSRealityServiceID {
+		configured, exists := spec.configuration.FindService(service.serviceID)
+		if !service.enabled || !exists || !configured.Enabled {
 			continue
 		}
 		email := config.UserEmail(service.authorizationID, service.serviceID)
@@ -208,9 +211,20 @@ func (manager *Manager) CollectActivity(ctx context.Context, after uint64, maxim
 func (manager *Manager) ApplyDynamicBlocks(ctx context.Context, policyGeneration, blockRevision uint64, blocks []DynamicBlock) error {
 	manager.operation.Lock()
 	defer manager.operation.Unlock()
+	manager.state.Lock()
+	spec := manager.running
+	process := manager.process
+	manager.state.Unlock()
+	if spec == nil || process == nil || process.exited() || process.api == nil {
+		return ErrRuntimeUnavailable
+	}
 	for _, block := range blocks {
-		if block.ServiceID != config.VLESSRealityServiceID {
+		service, exists := spec.configuration.FindService(block.ServiceID)
+		if !exists {
 			return ErrUnsupportedService
+		}
+		if !service.Enabled {
+			return ErrServiceDisabled
 		}
 		ip := net.ParseIP(block.SourceIP)
 		if ip == nil || ip.String() != block.SourceIP || block.ExpiresAtUnixNano <= 0 {
@@ -227,12 +241,6 @@ func (manager *Manager) ApplyDynamicBlocks(ctx context.Context, policyGeneration
 			return nil
 		}
 	}
-	manager.state.Lock()
-	process := manager.process
-	manager.state.Unlock()
-	if process == nil || process.exited() || process.api == nil {
-		return ErrRuntimeUnavailable
-	}
 	if err := process.api.replaceBlockRules(ctx, runtimeBlockRules(blocks)); err != nil {
 		return err
 	}
@@ -242,11 +250,21 @@ func (manager *Manager) ApplyDynamicBlocks(ctx context.Context, policyGeneration
 	return nil
 }
 
-func (manager *Manager) restoreBlockRules(ctx context.Context, api runtimeAPI) error {
+func (manager *Manager) restoreBlockRules(ctx context.Context, configuration config.Configuration, api runtimeAPI) error {
 	if len(manager.blocks) == 0 {
 		return nil
 	}
-	return api.replaceBlockRules(ctx, runtimeBlockRules(manager.blocks))
+	blocks := make([]DynamicBlock, 0, len(manager.blocks))
+	for _, block := range manager.blocks {
+		service, exists := configuration.FindService(block.ServiceID)
+		if exists && service.Enabled {
+			blocks = append(blocks, block)
+		}
+	}
+	if len(blocks) == 0 {
+		return nil
+	}
+	return api.replaceBlockRules(ctx, runtimeBlockRules(blocks))
 }
 
 func runtimeBlockRules(blocks []DynamicBlock) []blockRule {
@@ -273,23 +291,30 @@ func sameDynamicBlocks(first, second []DynamicBlock) bool {
 }
 
 func (manager *Manager) restoreServices(ctx context.Context, spec *runtimeSpec, api runtimeAPI) error {
-	if !spec.configuration.VLESSReality.Enabled {
-		return nil
+	type serviceCredential struct {
+		inboundTag string
+		credential runtimeCredential
 	}
-	credentials := make([]runtimeCredential, 0, len(manager.services))
+	credentials := make([]serviceCredential, 0, len(manager.services))
 	for _, state := range manager.services {
-		if !state.enabled || state.serviceID != config.VLESSRealityServiceID {
+		service, exists := spec.configuration.FindService(state.serviceID)
+		if !state.enabled || !exists || !service.Enabled {
 			continue
 		}
 		credential, err := credentialFor(spec.configuration, state.authorizationID, state.serviceID)
 		if err != nil {
 			return err
 		}
-		credentials = append(credentials, credential)
+		credentials = append(credentials, serviceCredential{inboundTag: service.ServiceID, credential: credential})
 	}
-	sort.Slice(credentials, func(i, j int) bool { return credentials[i].email < credentials[j].email })
-	for _, credential := range credentials {
-		if err := api.addUser(ctx, spec.configuration.VLESSReality.ServiceID, credential); err != nil {
+	sort.Slice(credentials, func(i, j int) bool {
+		if credentials[i].inboundTag != credentials[j].inboundTag {
+			return credentials[i].inboundTag < credentials[j].inboundTag
+		}
+		return credentials[i].credential.email < credentials[j].credential.email
+	})
+	for _, value := range credentials {
+		if err := api.addUser(ctx, value.inboundTag, value.credential); err != nil {
 			return err
 		}
 	}
@@ -297,12 +322,16 @@ func (manager *Manager) restoreServices(ctx context.Context, spec *runtimeSpec, 
 }
 
 func credentialFor(configuration config.Configuration, authorizationID, serviceID string) (runtimeCredential, error) {
+	service, exists := configuration.FindService(serviceID)
+	if !exists {
+		return runtimeCredential{}, ErrUnsupportedService
+	}
 	id, err := config.DeriveCredential(configuration.CredentialSeed, authorizationID, serviceID)
 	if err != nil {
 		return runtimeCredential{}, err
 	}
 	return runtimeCredential{
-		id: id, email: config.UserEmail(authorizationID, serviceID), flow: configuration.VLESSReality.Flow,
+		id: id, email: config.UserEmail(authorizationID, serviceID), flow: service.Flow,
 	}, nil
 }
 

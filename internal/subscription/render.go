@@ -24,27 +24,27 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 	if err := config.Validate(configuration); err != nil {
 		return nil, errors.New("stored Xray configuration is invalid")
 	}
-	service := configuration.VLESSReality
-	if !service.Enabled {
-		return nil, errors.New("Xray service is disabled")
-	}
 	host, err := normalizePublicAddress(request.PublicAddress)
 	if err != nil {
 		return nil, err
 	}
-	publicKey, err := config.RealityPublicKey(service.PrivateKey)
-	if err != nil {
-		return nil, err
-	}
-	serverName := service.ServerNames[0]
-	shortID := service.ShortIDs[0]
 	response := &centerpluginv1.RenderSubscriptionResponse{
 		Services: make([]*centerpluginv1.SubscriptionServiceContribution, len(request.Services)),
 	}
 	for index, binding := range request.Services {
-		if binding.ServiceId != config.VLESSRealityServiceID {
+		service, exists := configuration.FindService(binding.ServiceId)
+		if !exists {
 			return nil, errors.New("subscription requests an unsupported Xray service")
 		}
+		if !service.Enabled {
+			return nil, errors.New("subscription requests a disabled Xray service")
+		}
+		publicKey, err := config.RealityPublicKey(service.PrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		serverName := service.ServerNames[0]
+		shortID := service.ShortIDs[0]
 		credential, err := config.DeriveCredential(configuration.CredentialSeed, request.AuthorizationId, binding.ServiceId)
 		if err != nil {
 			return nil, err

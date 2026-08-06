@@ -40,7 +40,7 @@ func (runtime *fakeRuntime) ApplyServiceState(_ context.Context, _, _ uint64, au
 func (*fakeRuntime) CollectTraffic(context.Context) ([]xrayruntime.TrafficCounter, error) {
 	return []xrayruntime.TrafficCounter{{
 		AuthorizationID: "10000000-0000-4000-8000-000000000001",
-		ServiceID:       config.VLESSRealityServiceID, CounterEpoch: "epoch-1", UploadBytes: 12, DownloadBytes: 34,
+		ServiceID:       testServiceID, CounterEpoch: "epoch-1", UploadBytes: 12, DownloadBytes: 34,
 	}}, nil
 }
 func (*fakeRuntime) TelemetryStreamID() string { return "0123456789abcdef0123456789abcdef" }
@@ -48,7 +48,7 @@ func (*fakeRuntime) CollectActivity(context.Context, uint64, uint32) (xrayruntim
 	return xrayruntime.ActivityPage{Events: []xrayruntime.ActivityEvent{{
 		Sequence: 1, EventID: "online-1", ObservedAt: time.Now().UTC().UnixNano(),
 		AuthorizationID: "10000000-0000-4000-8000-000000000001",
-		ServiceID:       config.VLESSRealityServiceID, SourceIP: "192.0.2.1",
+		ServiceID:       testServiceID, SourceIP: "192.0.2.1",
 	}}, NextSequence: 1}, nil
 }
 func (runtime *fakeRuntime) ApplyDynamicBlocks(_ context.Context, _ uint64, revision uint64, blocks []xrayruntime.DynamicBlock) error {
@@ -107,7 +107,7 @@ func TestServerControlsServiceAndReturnsTraffic(t *testing.T) {
 	authorizationID := "10000000-0000-4000-8000-000000000001"
 	state := &nodepluginv1.SetServiceStateRequest{
 		PolicyGeneration: 1, StateRevision: 2, AuthorizationId: authorizationID,
-		ServiceId: config.VLESSRealityServiceID, Enabled: true,
+		ServiceId: testServiceID, Enabled: true,
 		Reason: nodepluginv1.ServiceStateReason_SERVICE_STATE_REASON_ACTIVE,
 	}
 	applied, err := server.SetServiceState(context.Background(), state)
@@ -117,7 +117,7 @@ func TestServerControlsServiceAndReturnsTraffic(t *testing.T) {
 	if err := nodepluginv1.ValidateSetServiceStateResponse(state, applied); err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.serviceState || runtime.authorization != authorizationID || runtime.serviceID != config.VLESSRealityServiceID {
+	if !runtime.serviceState || runtime.authorization != authorizationID || runtime.serviceID != testServiceID {
 		t.Fatalf("runtime state = %+v", runtime)
 	}
 	request := &nodepluginv1.CollectTelemetryRequest{MaximumEvents: 10}
@@ -135,7 +135,7 @@ func TestServerControlsServiceAndReturnsTraffic(t *testing.T) {
 	blocks := &nodepluginv1.ReplaceDynamicBlocksRequest{
 		PolicyGeneration: 1, BlockRevision: 3,
 		Blocks: []*nodepluginv1.DynamicBlock{{
-			AuthorizationId: authorizationID, ServiceId: config.VLESSRealityServiceID,
+			AuthorizationId: authorizationID, ServiceId: testServiceID,
 			SourceIp: "192.0.2.2", ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
 		}},
 	}
@@ -169,7 +169,11 @@ func TestServerRejectsUnknownConfigurationField(t *testing.T) {
 
 func testConfigurationJSON(t *testing.T) []byte {
 	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, 443, 443, "www.microsoft.com:443", "www.microsoft.com")
+	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
+		Listen: "0.0.0.0", Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
+		ServerName: "www.microsoft.com", Fingerprint: "chrome",
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,3 +183,5 @@ func testConfigurationJSON(t *testing.T) []byte {
 	}
 	return raw
 }
+
+const testServiceID = "vless-reality"

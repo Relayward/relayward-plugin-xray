@@ -40,6 +40,8 @@ type failingTrafficRuntimeAPI struct {
 
 type trackingRuntimeAPI struct {
 	online       map[string]map[string]int64
+	stats        []trafficStat
+	added        []string
 	replacements [][]blockRule
 }
 
@@ -59,10 +61,15 @@ func (*failingTrafficRuntimeAPI) queryOnlineIPs(context.Context, string) (map[st
 }
 func (*failingTrafficRuntimeAPI) replaceBlockRules(context.Context, []blockRule) error { return nil }
 
-func (*trackingRuntimeAPI) addUser(context.Context, string, runtimeCredential) error { return nil }
-func (*trackingRuntimeAPI) removeUser(context.Context, string, string) error         { return nil }
-func (*trackingRuntimeAPI) close()                                                   {}
-func (*trackingRuntimeAPI) queryStats(context.Context) ([]trafficStat, error)        { return nil, nil }
+func (api *trackingRuntimeAPI) addUser(_ context.Context, inboundTag string, credential runtimeCredential) error {
+	api.added = append(api.added, inboundTag+"\x00"+credential.email)
+	return nil
+}
+func (*trackingRuntimeAPI) removeUser(context.Context, string, string) error { return nil }
+func (*trackingRuntimeAPI) close()                                           {}
+func (api *trackingRuntimeAPI) queryStats(context.Context) ([]trafficStat, error) {
+	return append([]trafficStat(nil), api.stats...), nil
+}
 func (api *trackingRuntimeAPI) queryOnlineIPs(_ context.Context, email string) (map[string]int64, error) {
 	values := make(map[string]int64, len(api.online[email]))
 	for ip, lastSeen := range api.online[email] {
@@ -148,7 +155,7 @@ func TestManagerRestoresPreviousProcessAfterCandidateStartupFailure(t *testing.T
 	t.Parallel()
 	manager := testManager(t)
 	manager.connectAPI = func(_ context.Context, configuration config.Configuration) (runtimeAPI, error) {
-		if configuration.VLESSReality.Listen == "127.0.0.2" {
+		if configuration.Services[0].Listen == "127.0.0.2" {
 			return nil, errors.New("candidate API unavailable")
 		}
 		return &fakeRuntimeAPI{}, nil
@@ -193,7 +200,7 @@ func TestManagerControlsUsersAndCollectsTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorizationID := "10000000-0000-4000-8000-000000000001"
-	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, config.VLESSRealityServiceID, true); err != nil {
+	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, testServiceID, true); err != nil {
 		t.Fatalf("ApplyServiceState(enable) error = %v", err)
 	}
 	counters, err := manager.CollectTraffic(context.Background())
@@ -203,10 +210,10 @@ func TestManagerControlsUsersAndCollectsTraffic(t *testing.T) {
 	if len(counters) != 1 || counters[0].AuthorizationID != authorizationID || counters[0].UploadBytes != 12 || counters[0].DownloadBytes != 34 || counters[0].CounterEpoch == "" {
 		t.Fatalf("CollectTraffic() = %+v", counters)
 	}
-	if err := manager.ApplyServiceState(context.Background(), 1, 2, authorizationID, config.VLESSRealityServiceID, false); err != nil {
+	if err := manager.ApplyServiceState(context.Background(), 1, 2, authorizationID, testServiceID, false); err != nil {
 		t.Fatalf("ApplyServiceState(disable) error = %v", err)
 	}
-	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, config.VLESSRealityServiceID, true); !errors.Is(err, ErrServiceStateConflict) {
+	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, testServiceID, true); !errors.Is(err, ErrServiceStateConflict) {
 		t.Fatalf("ApplyServiceState(stale) error = %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -224,15 +231,15 @@ func TestManagerKeepsUserEnabledWhenFinalTrafficCollectionFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorizationID := "10000000-0000-4000-8000-000000000001"
-	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, config.VLESSRealityServiceID, true); err != nil {
+	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, testServiceID, true); err != nil {
 		t.Fatal(err)
 	}
 	failingAPI := &failingTrafficRuntimeAPI{}
 	manager.process.api = failingAPI
-	if err := manager.ApplyServiceState(context.Background(), 1, 2, authorizationID, config.VLESSRealityServiceID, false); err == nil {
+	if err := manager.ApplyServiceState(context.Background(), 1, 2, authorizationID, testServiceID, false); err == nil {
 		t.Fatal("ApplyServiceState(disable) unexpectedly succeeded")
 	}
-	state := manager.services[serviceKey(authorizationID, config.VLESSRealityServiceID)]
+	state := manager.services[serviceKey(authorizationID, testServiceID)]
 	if state == nil || !state.enabled || failingAPI.removed {
 		t.Fatalf("service state = %+v, removed = %v", state, failingAPI.removed)
 	}
@@ -251,10 +258,10 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorizationID := "10000000-0000-4000-8000-000000000001"
-	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, config.VLESSRealityServiceID, true); err != nil {
+	if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, testServiceID, true); err != nil {
 		t.Fatal(err)
 	}
-	email := config.UserEmail(authorizationID, config.VLESSRealityServiceID)
+	email := config.UserEmail(authorizationID, testServiceID)
 	api := &trackingRuntimeAPI{online: map[string]map[string]int64{
 		email: {"192.0.2.10": time.Now().Unix()},
 	}}
@@ -265,14 +272,14 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 		t.Fatalf("CollectActivity() = %+v, %v", page, err)
 	}
 	blocks := []DynamicBlock{{
-		AuthorizationID: authorizationID, ServiceID: config.VLESSRealityServiceID, SourceIP: "192.0.2.20",
+		AuthorizationID: authorizationID, ServiceID: testServiceID, SourceIP: "192.0.2.20",
 		ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
 	}}
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil {
 		t.Fatal(err)
 	}
 	if len(api.replacements) != 1 || len(api.replacements[0]) != 1 || api.replacements[0][0].email != email ||
-		api.replacements[0][0].inboundTag != config.VLESSRealityServiceID || api.replacements[0][0].sourceIP != "192.0.2.20" {
+		api.replacements[0][0].inboundTag != testServiceID || api.replacements[0][0].sourceIP != "192.0.2.20" {
 		t.Fatalf("replacement = %+v", api.replacements)
 	}
 	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil || len(api.replacements) != 1 {
@@ -298,14 +305,110 @@ func TestManagerCollectsActivityAndRestoresDynamicBlocks(t *testing.T) {
 	}
 }
 
-func testConfigurationValue(t *testing.T, listen string) config.Configuration {
-	t.Helper()
-	value, err := config.NewConfiguration("26.3.27", 10085, 443, 443, "www.microsoft.com:443", "www.microsoft.com")
+func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
+	t.Parallel()
+	manager := testManager(t)
+	configuration, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
+		{
+			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
+			Listen: "0.0.0.0", Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
+			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+		},
+		{
+			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
+			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443, Target: "www.cloudflare.com:443",
+			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	value.VLESSReality.Listen = listen
-	if err := config.Validate(value); err != nil {
+	authorizationID := "10000000-0000-4000-8000-000000000001"
+	mainEmail := config.UserEmail(authorizationID, "reality-main")
+	backupEmail := config.UserEmail(authorizationID, "reality-backup")
+	api := &trackingRuntimeAPI{
+		online: map[string]map[string]int64{
+			mainEmail:   {"192.0.2.10": time.Now().Unix()},
+			backupEmail: {"192.0.2.11": time.Now().Unix()},
+		},
+		stats: []trafficStat{
+			{email: mainEmail, direction: "uplink", value: 10},
+			{email: mainEmail, direction: "downlink", value: 20},
+			{email: backupEmail, direction: "uplink", value: 30},
+			{email: backupEmail, direction: "downlink", value: 40},
+		},
+	}
+	manager.connectAPI = func(context.Context, config.Configuration) (runtimeAPI, error) { return api, nil }
+	if err := manager.Apply(context.Background(), 1, digestA, configuration); err != nil {
+		t.Fatal(err)
+	}
+	for _, serviceID := range []string{"reality-main", "reality-backup"} {
+		if err := manager.ApplyServiceState(context.Background(), 1, 1, authorizationID, serviceID, true); err != nil {
+			t.Fatalf("ApplyServiceState(%q) error = %v", serviceID, err)
+		}
+	}
+	if len(api.added) != 2 || api.added[0] != "reality-main\x00"+mainEmail ||
+		api.added[1] != "reality-backup\x00"+backupEmail {
+		t.Fatalf("added users = %q", api.added)
+	}
+	counters, err := manager.CollectTraffic(context.Background())
+	if err != nil || len(counters) != 2 || counters[0].ServiceID != "reality-backup" ||
+		counters[0].UploadBytes != 30 || counters[0].DownloadBytes != 40 ||
+		counters[1].ServiceID != "reality-main" || counters[1].UploadBytes != 10 || counters[1].DownloadBytes != 20 {
+		t.Fatalf("CollectTraffic() = %+v, %v", counters, err)
+	}
+	activity, err := manager.CollectActivity(context.Background(), 0, 10)
+	if err != nil || len(activity.Events) != 2 {
+		t.Fatalf("CollectActivity() = %+v, %v", activity, err)
+	}
+	blocks := []DynamicBlock{
+		{AuthorizationID: authorizationID, ServiceID: "reality-backup", SourceIP: "192.0.2.20", ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano()},
+		{AuthorizationID: authorizationID, ServiceID: "reality-main", SourceIP: "192.0.2.20", ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano()},
+	}
+	if err := manager.ApplyDynamicBlocks(context.Background(), 1, 1, blocks); err != nil {
+		t.Fatal(err)
+	}
+	restored := &trackingRuntimeAPI{}
+	manager.connectAPI = func(context.Context, config.Configuration) (runtimeAPI, error) { return restored, nil }
+	if err := manager.Apply(context.Background(), 2, digestB, configuration); err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.added) != 2 || len(restored.replacements) != 1 || len(restored.replacements[0]) != 2 {
+		t.Fatalf("restored runtime = added %q, blocks %+v", restored.added, restored.replacements)
+	}
+	editable := config.Editable(configuration)
+	editable.Services = editable.Services[1:]
+	withoutBackup, err := config.MergeEditable(configuration, editable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := &trackingRuntimeAPI{}
+	manager.connectAPI = func(context.Context, config.Configuration) (runtimeAPI, error) { return removed, nil }
+	if err := manager.Apply(context.Background(), 3, digestC, withoutBackup); err != nil {
+		t.Fatal(err)
+	}
+	backupState := manager.services[serviceKey(authorizationID, "reality-backup")]
+	mainState := manager.services[serviceKey(authorizationID, "reality-main")]
+	if backupState == nil || backupState.enabled || mainState == nil || !mainState.enabled ||
+		len(manager.blocks) != 1 || manager.blocks[0].ServiceID != "reality-main" || manager.blockRevision != 0 ||
+		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 1 {
+		t.Fatalf("state after service removal = backup %+v, main %+v, blocks %+v, runtime %+v", backupState, mainState, manager.blocks, removed)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testConfigurationValue(t *testing.T, listen string) config.Configuration {
+	t.Helper()
+	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
+		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
+		Listen: listen, Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
+		ServerName: "www.microsoft.com", Fingerprint: "chrome",
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	return value
@@ -365,6 +468,8 @@ while :; do sleep 1; done
 }
 
 const (
-	digestA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	digestB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testServiceID = "vless-reality"
+	digestA       = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	digestB       = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	digestC       = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 )

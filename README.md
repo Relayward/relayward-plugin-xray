@@ -6,7 +6,7 @@
 
 - Linux AMD64 center and node artifacts
 - responsive Simplified Chinese and English administration page
-- structured VLESS + REALITY + TCP Vision configuration
+- multiple independent VLESS + REALITY + TCP Vision services per node
 - official stable `XTLS/Xray-core` release resolution
 - bounded download with exact size and SHA-256 verification
 - private, immutable Xray version installations
@@ -19,7 +19,7 @@
 - VLESS URI, Mihomo, and sing-box subscription contributions
 - Relayward generation, digest, and health reporting
 
-The current runtime supports one service per node: `vless-reality`. General routing and DNS configuration, additional protocols and transports, certificates, and full access-log collection are not implemented.
+The current runtime supports up to 64 independently identified VLESS + REALITY + TCP Vision services per node. General routing and DNS configuration, additional protocols and transports, certificates, and full access-log collection are not implemented.
 
 Recent activity is an online-presence signal rather than a full request log. While an authorization remains online, the plugin emits at most one accepted activity event per authorization, service, and source IP every 30 seconds. The stream ID, sequence cursor, unacknowledged events, and refresh index are stored atomically in a private state file so Agent retries and plugin restarts do not create sequence gaps. Dynamic blocks replace the complete Relayward-managed rule set and match authorization email, inbound service, and one source IP together, avoiding collateral blocking of another authorization behind the same NAT.
 
@@ -32,24 +32,29 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
   "xray_version": "26.3.27",
   "api_port": 10085,
   "credential_seed": "base64url-encoded-32-byte-secret",
-  "vless_reality": {
-    "enabled": true,
-    "service_id": "vless-reality",
-    "display_name": "VLESS Reality",
-    "listen": "0.0.0.0",
-    "port": 443,
-    "public_port": 443,
-    "target": "www.cloudflare.com:443",
-    "server_names": ["www.cloudflare.com"],
-    "private_key": "base64url-encoded-X25519-private-key",
-    "short_ids": ["0123456789abcdef"],
-    "flow": "xtls-rprx-vision",
-    "fingerprint": "chrome"
-  }
+  "services": [
+    {
+      "type": "vless-reality",
+      "enabled": true,
+      "service_id": "reality-main",
+      "display_name": "Reality Main",
+      "listen": "0.0.0.0",
+      "port": 443,
+      "public_port": 443,
+      "target": "www.cloudflare.com:443",
+      "server_names": ["www.cloudflare.com"],
+      "private_key": "base64url-encoded-X25519-private-key",
+      "short_ids": ["0123456789abcdef"],
+      "flow": "xtls-rprx-vision",
+      "fingerprint": "chrome"
+    }
+  ]
 }
 ```
 
-The administration page generates secrets for a node's first configuration and preserves them during normal edits. Unknown fields, prerelease Xray versions, invalid ports, non-domain REALITY targets, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
+Each service ID is unique within its node configuration and becomes the Xray inbound tag used by authorization control, telemetry, dynamic blocking, and subscription rendering. Services are stored in service-ID order. The administration page generates a node credential seed and independent REALITY secrets for each new service. Editing a service preserves its secrets by service ID; deleting a service removes them. The retired single-service `vless_reality` shape is intentionally unsupported.
+
+Unknown fields, prerelease Xray versions, duplicate service IDs, conflicting listeners, non-domain REALITY targets, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
 
 The target is a starting value, not a universal deployment choice. It must be reachable from the node, support TLS 1.3, and complete a real REALITY handshake with the selected Xray release; a successful TCP or ordinary TLS probe alone is insufficient.
 

@@ -26,75 +26,23 @@
 
       <section class="card" id="configuration-card" hidden>
         <div class="tabs" role="tablist" aria-label="Xray configuration">
-          <button class="tab active" id="service-tab" type="button" role="tab" aria-selected="true" aria-controls="service-panel" data-panel="service-panel" data-i18n="Service">Service</button>
-          <button class="tab" id="network-tab" type="button" role="tab" aria-selected="false" aria-controls="network-panel" data-panel="network-panel" data-i18n="Network">Network</button>
+          <button class="tab active" id="services-tab" type="button" role="tab" aria-selected="true" aria-controls="services-panel" data-panel="services-panel" data-i18n="Services">Services</button>
           <button class="tab" id="runtime-tab" type="button" role="tab" aria-selected="false" aria-controls="runtime-panel" data-panel="runtime-panel" data-i18n="Runtime">Runtime</button>
         </div>
 
         <form id="configuration-form">
-          <div class="panel" id="service-panel" role="tabpanel" aria-labelledby="service-tab">
+          <div class="panel" id="services-panel" role="tabpanel" aria-labelledby="services-tab">
             <div class="panel-header">
               <div>
-                <h3 data-i18n="VLESS REALITY">VLESS REALITY</h3>
-                <p data-i18n="Service identity and client defaults">Service identity and client defaults</p>
+                <h3 data-i18n="Proxy services">Proxy services</h3>
+                <p data-i18n="Independent listeners published by this node">Independent listeners published by this node</p>
               </div>
-              <label class="switch-row" for="enabled">
-                <span data-i18n="Enabled">Enabled</span>
-                <input id="enabled" type="checkbox" role="switch" />
-              </label>
+              <button class="button button-primary" id="add-service-button" type="button" data-i18n="Add service">Add service</button>
             </div>
-            <div class="field-grid">
-              <label class="field" for="display-name">
-                <span data-i18n="Display name">Display name</span>
-                <input id="display-name" maxlength="100" required />
-              </label>
-              <label class="field" for="xray-version">
-                <span data-i18n="Xray version">Xray version</span>
-                <input id="xray-version" inputmode="decimal" placeholder="26.3.27" required />
-              </label>
-              <label class="field" for="fingerprint">
-                <span data-i18n="Client fingerprint">Client fingerprint</span>
-                <select id="fingerprint">
-                  <option value="chrome">Chrome</option>
-                  <option value="firefox">Firefox</option>
-                  <option value="safari">Safari</option>
-                  <option value="ios">iOS</option>
-                  <option value="android">Android</option>
-                  <option value="edge">Edge</option>
-                  <option value="randomized">Randomized</option>
-                </select>
-              </label>
-            </div>
-          </div>
-
-          <div class="panel" id="network-panel" role="tabpanel" aria-labelledby="network-tab" hidden>
-            <div class="panel-header">
-              <div>
-                <h3 data-i18n="Listener and REALITY">Listener and REALITY</h3>
-                <p data-i18n="Inbound ports and handshake target">Inbound ports and handshake target</p>
-              </div>
-            </div>
-            <div class="field-grid">
-              <label class="field" for="listen-address">
-                <span data-i18n="Listen address">Listen address</span>
-                <input id="listen-address" placeholder="0.0.0.0" required />
-              </label>
-              <label class="field" for="listen-port">
-                <span data-i18n="Listen port">Listen port</span>
-                <input id="listen-port" type="number" min="1" max="65535" required />
-              </label>
-              <label class="field" for="public-port">
-                <span data-i18n="Public port">Public port</span>
-                <input id="public-port" type="number" min="1" max="65535" required />
-              </label>
-              <label class="field" for="reality-target">
-                <span data-i18n="REALITY target">REALITY target</span>
-                <input id="reality-target" placeholder="www.microsoft.com:443" required />
-              </label>
-              <label class="field" for="server-name">
-                <span data-i18n="Server name">Server name</span>
-                <input id="server-name" placeholder="www.microsoft.com" required />
-              </label>
+            <div class="service-list" id="service-list"></div>
+            <div class="list-empty" id="service-list-empty" hidden>
+              <strong data-i18n="No services configured">No services configured</strong>
+              <span data-i18n="Add a service to publish an Xray inbound">Add a service to publish an Xray inbound</span>
             </div>
           </div>
 
@@ -102,16 +50,20 @@
             <div class="panel-header">
               <div>
                 <h3 data-i18n="Local runtime">Local runtime</h3>
-                <p data-i18n="Private control endpoint">Private control endpoint</p>
+                <p data-i18n="Xray release and private control endpoint">Xray release and private control endpoint</p>
               </div>
             </div>
             <div class="field-grid">
+              <label class="field" for="xray-version">
+                <span data-i18n="Xray version">Xray version</span>
+                <input id="xray-version" inputmode="decimal" placeholder="26.3.27" required />
+              </label>
               <label class="field" for="api-port">
                 <span data-i18n="Local API port">Local API port</span>
                 <input id="api-port" type="number" min="1024" max="65535" required />
               </label>
               <div class="field readonly-field">
-                <span data-i18n="Transport">Transport</span>
+                <span data-i18n="Supported transport">Supported transport</span>
                 <output>VLESS + REALITY + TCP Vision</output>
               </div>
             </div>
@@ -128,6 +80,89 @@
         <h3 data-i18n="No nodes available">No nodes available</h3>
       </section>
     </main>
+
+    <dialog class="dialog" id="service-dialog" aria-labelledby="service-dialog-title">
+      <form class="dialog-content" id="service-form">
+        <header class="dialog-header">
+          <div>
+            <h3 id="service-dialog-title"></h3>
+            <p data-i18n="Configure one independent VLESS REALITY listener">Configure one independent VLESS REALITY listener</p>
+          </div>
+          <button class="icon-button" id="close-service-dialog" type="button" aria-label="Close" title="Close">&#215;</button>
+        </header>
+
+        <div class="dialog-body">
+          <section class="form-section" aria-labelledby="identity-title">
+            <div class="section-heading">
+              <h4 id="identity-title" data-i18n="Identity">Identity</h4>
+              <label class="switch-row" for="service-enabled">
+                <span data-i18n="Enabled">Enabled</span>
+                <input id="service-enabled" type="checkbox" role="switch" />
+              </label>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="service-id">
+                <span data-i18n="Service ID">Service ID</span>
+                <input id="service-id" pattern="[a-z0-9][a-z0-9._\-]{0,63}" maxlength="64" placeholder="reality-main" required />
+              </label>
+              <label class="field" for="display-name">
+                <span data-i18n="Display name">Display name</span>
+                <input id="display-name" maxlength="100" required />
+              </label>
+              <div class="field readonly-field">
+                <span data-i18n="Service type">Service type</span>
+                <output>VLESS REALITY</output>
+              </div>
+              <label class="field" for="fingerprint">
+                <span data-i18n="Client fingerprint">Client fingerprint</span>
+                <select id="fingerprint">
+                  <option value="chrome">Chrome</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="safari">Safari</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">Android</option>
+                  <option value="edge">Edge</option>
+                  <option value="randomized">Randomized</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section" aria-labelledby="network-title">
+            <div class="section-heading">
+              <h4 id="network-title" data-i18n="Listener and REALITY">Listener and REALITY</h4>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="listen-address">
+                <span data-i18n="Listen address">Listen address</span>
+                <input id="listen-address" placeholder="0.0.0.0" required />
+              </label>
+              <label class="field" for="listen-port">
+                <span data-i18n="Listen port">Listen port</span>
+                <input id="listen-port" type="number" min="1" max="65535" required />
+              </label>
+              <label class="field" for="public-port">
+                <span data-i18n="Public port">Public port</span>
+                <input id="public-port" type="number" min="1" max="65535" required />
+              </label>
+              <label class="field" for="reality-target">
+                <span data-i18n="REALITY target">REALITY target</span>
+                <input id="reality-target" placeholder="www.cloudflare.com:443" required />
+              </label>
+              <label class="field" for="server-name">
+                <span data-i18n="Server name">Server name</span>
+                <input id="server-name" placeholder="www.cloudflare.com" required />
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <footer class="dialog-footer">
+          <button class="button button-outline" id="cancel-service-button" type="button" data-i18n="Cancel">Cancel</button>
+          <button class="button button-primary" type="submit" data-i18n="Apply service">Apply service</button>
+        </footer>
+      </form>
+    </dialog>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

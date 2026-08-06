@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-func TestConfigurationBuildsXrayAndStableCredentials(t *testing.T) {
+func TestConfigurationBuildsMultipleXrayServicesAndStableCredentials(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.3.27", 10085, 443, 443, "www.microsoft.com:443", "www.microsoft.com")
+	value, err := NewConfiguration("26.3.27", 10085, testEditableServices())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,8 @@ func TestConfigurationBuildsXrayAndStableCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if decoded.XrayVersion != "26.3.27" || decoded.VLESSReality.ServiceID != VLESSRealityServiceID {
+	if decoded.XrayVersion != "26.3.27" || len(decoded.Services) != 2 || decoded.Services[0].ServiceID != "reality-backup" ||
+		decoded.Services[1].ServiceID != "reality-main" {
 		t.Fatalf("configuration = %+v", decoded)
 	}
 	xrayJSON, err := decoded.XrayJSON()
@@ -30,6 +31,9 @@ func TestConfigurationBuildsXrayAndStableCredentials(t *testing.T) {
 		API struct {
 			Services []string `json:"services"`
 		} `json:"api"`
+		Inbounds []struct {
+			Tag string `json:"tag"`
+		} `json:"inbounds"`
 		Outbounds []struct {
 			Tag      string `json:"tag"`
 			Protocol string `json:"protocol"`
@@ -44,42 +48,84 @@ func TestConfigurationBuildsXrayAndStableCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(generated.API.Services) != 3 || generated.API.Services[1] != "RoutingService" ||
-		len(generated.Outbounds) != 2 || generated.Outbounds[1].Tag != "blocked" ||
-		generated.Outbounds[1].Protocol != "blackhole" || !generated.Policy.Levels["0"].StatsUserOnline {
-		t.Fatalf("generated Xray services = %+v", generated)
+		len(generated.Inbounds) != 3 || generated.Inbounds[1].Tag != "reality-backup" ||
+		generated.Inbounds[2].Tag != "reality-main" || len(generated.Outbounds) != 2 ||
+		generated.Outbounds[1].Tag != "blocked" || generated.Outbounds[1].Protocol != "blackhole" ||
+		!generated.Policy.Levels["0"].StatsUserOnline {
+		t.Fatalf("generated Xray configuration = %+v", generated)
 	}
-	first, err := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", VLESSRealityServiceID)
+	first, err := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", "reality-main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _ := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", VLESSRealityServiceID)
-	other, _ := DeriveCredential(decoded.CredentialSeed, "20000000-0000-4000-8000-000000000002", VLESSRealityServiceID)
-	if first != second || first == other {
-		t.Fatalf("derived credentials = %q, %q, %q", first, second, other)
+	second, _ := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", "reality-main")
+	otherService, _ := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", "reality-backup")
+	otherAuthorization, _ := DeriveCredential(decoded.CredentialSeed, "20000000-0000-4000-8000-000000000002", "reality-main")
+	if first != second || first == otherService || first == otherAuthorization {
+		t.Fatalf("derived credentials = %q, %q, %q, %q", first, second, otherService, otherAuthorization)
 	}
-	publicKey, err := RealityPublicKey(decoded.VLESSReality.PrivateKey)
-	if err != nil || len(publicKey) != 43 {
-		t.Fatalf("RealityPublicKey() = %q, %v", publicKey, err)
+	for _, service := range decoded.Services {
+		publicKey, err := RealityPublicKey(service.PrivateKey)
+		if err != nil || len(publicKey) != 43 {
+			t.Fatalf("RealityPublicKey(%q) = %q, %v", service.ServiceID, publicKey, err)
+		}
+	}
+}
+
+func TestConfigurationOmitsDisabledServiceFromXray(t *testing.T) {
+	t.Parallel()
+	services := testEditableServices()
+	services[1].Enabled = false
+	value, err := NewConfiguration("26.3.27", 10085, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := value.XrayJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generated struct {
+		Inbounds []json.RawMessage `json:"inbounds"`
+	}
+	if err := json.Unmarshal(raw, &generated); err != nil {
+		t.Fatal(err)
+	}
+	if len(generated.Inbounds) != 2 {
+		t.Fatalf("inbounds = %d, want API plus one enabled service", len(generated.Inbounds))
 	}
 }
 
 func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.3.27", 10085, 443, 443, "www.microsoft.com:443", "www.microsoft.com")
+	value, err := NewConfiguration("26.3.27", 10085, testEditableServices())
 	if err != nil {
 		t.Fatal(err)
 	}
 	valid, _ := Encode(value)
 	tests := map[string]func(*Configuration){
-		"missing version":  func(value *Configuration) { value.XrayVersion = "" },
-		"leading v":        func(value *Configuration) { value.XrayVersion = "v26.3.27" },
-		"pre-release":      func(value *Configuration) { value.XrayVersion = "26.3.27-rc.1" },
-		"privileged API":   func(value *Configuration) { value.APIPort = 80 },
-		"invalid seed":     func(value *Configuration) { value.CredentialSeed = "secret" },
-		"invalid service":  func(value *Configuration) { value.VLESSReality.ServiceID = "other" },
-		"invalid target":   func(value *Configuration) { value.VLESSReality.Target = "127.0.0.1:443" },
-		"invalid key":      func(value *Configuration) { value.VLESSReality.PrivateKey = "secret" },
-		"invalid short ID": func(value *Configuration) { value.VLESSReality.ShortIDs = []string{"xyz"} },
+		"missing version":      func(value *Configuration) { value.XrayVersion = "" },
+		"leading v":            func(value *Configuration) { value.XrayVersion = "v26.3.27" },
+		"pre-release":          func(value *Configuration) { value.XrayVersion = "26.3.27-rc.1" },
+		"privileged API":       func(value *Configuration) { value.APIPort = 80 },
+		"invalid seed":         func(value *Configuration) { value.CredentialSeed = "secret" },
+		"unsupported type":     func(value *Configuration) { value.Services[0].Type = "trojan" },
+		"invalid service ID":   func(value *Configuration) { value.Services[0].ServiceID = "Invalid ID" },
+		"duplicate service ID": func(value *Configuration) { value.Services[1].ServiceID = value.Services[0].ServiceID },
+		"unsorted services": func(value *Configuration) {
+			value.Services[0], value.Services[1] = value.Services[1], value.Services[0]
+		},
+		"invalid target":       func(value *Configuration) { value.Services[0].Target = "127.0.0.1:443" },
+		"invalid key":          func(value *Configuration) { value.Services[0].PrivateKey = "secret" },
+		"invalid short ID":     func(value *Configuration) { value.Services[0].ShortIDs = []string{"xyz"} },
+		"conflicting listener": func(value *Configuration) { value.Services[1].Port = value.Services[0].Port },
+		"conflicting API port": func(value *Configuration) { value.Services[0].Port = value.APIPort },
+		"too many services": func(value *Configuration) {
+			service := value.Services[0]
+			for len(value.Services) <= MaximumServices {
+				service.ServiceID += "x"
+				value.Services = append(value.Services, service)
+			}
+		},
 	}
 	for name, mutate := range tests {
 		name, mutate := name, mutate
@@ -106,26 +152,62 @@ func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 	if _, err := Decode(raw); err == nil {
 		t.Fatal("Decode() accepted an unknown field")
 	}
+	legacy := []byte(`{"xray_version":"26.3.27","api_port":10085,"credential_seed":"secret","vless_reality":{}}`)
+	if _, err := Decode(legacy); err == nil {
+		t.Fatal("Decode() accepted the retired single-service configuration")
+	}
 }
 
-func TestEditableConfigurationPreservesSecrets(t *testing.T) {
+func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecrets(t *testing.T) {
 	t.Parallel()
-	value, err := NewConfiguration("26.3.27", 10085, 443, 443, "www.microsoft.com:443", "www.microsoft.com")
+	value, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
 	if err != nil {
 		t.Fatal(err)
 	}
 	editable := Editable(value)
-	editable.VLESSReality.DisplayName = "Edge VLESS"
+	editable.Services[0].DisplayName = "Updated Main"
+	editable.Services = append(editable.Services, testEditableServices()[1])
 	merged, err := MergeEditable(value, editable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if merged.CredentialSeed != value.CredentialSeed || merged.VLESSReality.PrivateKey != value.VLESSReality.PrivateKey ||
-		merged.VLESSReality.ShortIDs[0] != value.VLESSReality.ShortIDs[0] || merged.VLESSReality.DisplayName != "Edge VLESS" {
-		t.Fatalf("MergeEditable() changed protected configuration: %+v", merged)
+	main, mainExists := merged.FindService("reality-main")
+	backup, backupExists := merged.FindService("reality-backup")
+	if merged.CredentialSeed != value.CredentialSeed || !mainExists || !backupExists ||
+		main.PrivateKey != value.Services[0].PrivateKey || main.ShortIDs[0] != value.Services[0].ShortIDs[0] ||
+		main.DisplayName != "Updated Main" {
+		t.Fatalf("MergeEditable() changed protected existing configuration: %+v", merged)
+	}
+	if backup.PrivateKey == "" || backup.PrivateKey == value.Services[0].PrivateKey ||
+		backup.ShortIDs[0] == value.Services[0].ShortIDs[0] {
+		t.Fatalf("MergeEditable() did not generate independent service secrets: %+v", backup)
 	}
 	created, err := NewFromEditable(editable)
-	if err != nil || created.CredentialSeed == "" || created.VLESSReality.PrivateKey == "" {
+	createdMain, createdMainExists := created.FindService("reality-main")
+	if err != nil || created.CredentialSeed == "" || created.CredentialSeed == value.CredentialSeed ||
+		len(created.Services) != 2 || !createdMainExists || createdMain.PrivateKey == value.Services[0].PrivateKey {
 		t.Fatalf("NewFromEditable() = %+v, %v", created, err)
+	}
+	deleted, err := MergeEditable(merged, EditableConfiguration{
+		XrayVersion: editable.XrayVersion, APIPort: editable.APIPort, Services: editable.Services[1:],
+	})
+	if err != nil || len(deleted.Services) != 1 || deleted.Services[0].ServiceID != "reality-backup" ||
+		deleted.Services[0].PrivateKey != backup.PrivateKey {
+		t.Fatalf("MergeEditable(delete) = %+v, %v", deleted, err)
+	}
+}
+
+func testEditableServices() []EditableService {
+	return []EditableService{
+		{
+			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
+			Listen: "0.0.0.0", Port: 443, PublicPort: 443, Target: "www.microsoft.com:443",
+			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+		},
+		{
+			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
+			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443, Target: "www.cloudflare.com:443",
+			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+		},
 	}
 }

@@ -201,13 +201,17 @@ func (server *Server) saveConfiguration(ctx context.Context, raw []byte) (any, e
 }
 
 func (server *Server) replaceServices(ctx context.Context, nodeID string, configuration config.Configuration, digest string) error {
-	request := &centerpluginv1.ReplaceServicesRequest{
-		NodeId: nodeID,
-		Services: []*centerpluginv1.PluginService{{
-			Id: config.VLESSRealityServiceID, DisplayName: configuration.VLESSReality.DisplayName,
-			Enabled: configuration.VLESSReality.Enabled, Capabilities: []string{"subscription.render"},
+	services := make([]*centerpluginv1.PluginService, len(configuration.Services))
+	for index, service := range configuration.Services {
+		services[index] = &centerpluginv1.PluginService{
+			Id: service.ServiceID, DisplayName: service.DisplayName,
+			Enabled: service.Enabled, Capabilities: []string{"subscription.render"},
 			SubscriptionSha256: digest,
-		}},
+		}
+	}
+	request := &centerpluginv1.ReplaceServicesRequest{
+		NodeId:   nodeID,
+		Services: services,
 	}
 	response, err := server.host.ReplaceServices(ctx, request)
 	if err != nil {

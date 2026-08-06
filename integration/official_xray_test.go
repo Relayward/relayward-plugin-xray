@@ -21,13 +21,23 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 		t.Skip("set RELAYWARD_XRAY_INTEGRATION=1 to download and run official Xray")
 	}
 	apiPort := freePort(t)
-	servicePort := freePort(t)
-	configuration, err := config.NewConfiguration("26.3.27", apiPort, servicePort, servicePort,
-		"www.cloudflare.com:443", "www.cloudflare.com")
+	mainPort := freePort(t)
+	backupPort := freePort(t)
+	configuration, err := config.NewConfiguration("26.3.27", apiPort, []config.EditableService{
+		{
+			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
+			Listen: "127.0.0.1", Port: mainPort, PublicPort: mainPort, Target: "www.cloudflare.com:443",
+			ServerName: "www.cloudflare.com", Fingerprint: "chrome",
+		},
+		{
+			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
+			Listen: "127.0.0.1", Port: backupPort, PublicPort: backupPort, Target: "www.microsoft.com:443",
+			ServerName: "www.microsoft.com", Fingerprint: "chrome",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration.VLESSReality.Listen = "127.0.0.1"
 	raw, err := config.Encode(configuration)
 	if err != nil {
 		t.Fatal(err)
@@ -54,22 +64,33 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	if !status.Healthy || status.Generation != 1 || status.ConfigurationSHA256 != digest {
 		t.Fatalf("GetStatus() = %+v", status)
 	}
+	waitForTCP(t, mainPort)
+	waitForTCP(t, backupPort)
 	authorizationID := "10000000-0000-4000-8000-000000000001"
-	if err := runtime.ApplyServiceState(ctx, 1, 1, authorizationID, config.VLESSRealityServiceID, true); err != nil {
-		t.Fatalf("ApplyServiceState() error = %v", err)
+	for revision, serviceID := range []string{"reality-main", "reality-backup"} {
+		if err := runtime.ApplyServiceState(ctx, 1, uint64(revision+1), authorizationID, serviceID, true); err != nil {
+			t.Fatalf("ApplyServiceState(%q) error = %v", serviceID, err)
+		}
 	}
 	counters, err := runtime.CollectTraffic(ctx)
-	if err != nil || len(counters) != 1 || counters[0].AuthorizationID != authorizationID {
+	if err != nil || len(counters) != 2 || counters[0].AuthorizationID != authorizationID ||
+		counters[0].ServiceID != "reality-backup" || counters[1].ServiceID != "reality-main" {
 		t.Fatalf("CollectTraffic() = %+v, %v", counters, err)
 	}
 	activity, err := runtime.CollectActivity(ctx, 0, 10)
 	if err != nil || len(activity.Events) != 0 || activity.NextSequence != 0 {
 		t.Fatalf("CollectActivity() = %+v, %v", activity, err)
 	}
-	blocks := []xrayruntime.DynamicBlock{{
-		AuthorizationID: authorizationID, ServiceID: config.VLESSRealityServiceID, SourceIP: "192.0.2.1",
-		ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
-	}}
+	blocks := []xrayruntime.DynamicBlock{
+		{
+			AuthorizationID: authorizationID, ServiceID: "reality-main", SourceIP: "192.0.2.1",
+			ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
+		},
+		{
+			AuthorizationID: authorizationID, ServiceID: "reality-backup", SourceIP: "192.0.2.1",
+			ExpiresAtUnixNano: time.Now().Add(time.Hour).UnixNano(),
+		},
+	}
 	if err := runtime.ApplyDynamicBlocks(ctx, 1, 1, blocks); err != nil {
 		t.Fatalf("ApplyDynamicBlocks() error = %v", err)
 	}
@@ -81,6 +102,21 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	if err := runtime.Close(closeContext); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
+}
+
+func waitForTCP(t *testing.T, port uint16) {
+	t.Helper()
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		connection, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("Xray listener %s is not reachable", address)
 }
 
 func integrationDataDirectory(t *testing.T) string {
