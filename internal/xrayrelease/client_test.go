@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestResolveAndDownload(t *testing.T) {
@@ -80,5 +81,27 @@ func TestDownloadRejectsDigestMismatch(t *testing.T) {
 	}
 	if err := client.Download(context.Background(), asset, &bytes.Buffer{}); err == nil {
 		t.Fatal("Download() unexpectedly succeeded")
+	}
+}
+
+func TestDownloadUsesDedicatedAssetTimeout(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	client := &Client{httpClient: server.Client(), assetBase: server.URL, downloadTimeout: 20 * time.Millisecond}
+	payload := []byte("x")
+	digest := sha256.Sum256(payload)
+	asset := Asset{
+		Version: "26.3.27", URL: server.URL + "/v26.3.27/" + assetName,
+		Size: int64(len(payload)), SHA256: hex.EncodeToString(digest[:]),
+	}
+	started := time.Now()
+	if err := client.Download(context.Background(), asset, &bytes.Buffer{}); err == nil {
+		t.Fatal("Download() unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Download() elapsed = %s", elapsed)
 	}
 }

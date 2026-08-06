@@ -16,11 +16,13 @@ import (
 )
 
 const (
-	assetName           = "Xray-linux-64.zip"
-	defaultAPIBase      = "https://api.github.com/repos/XTLS/Xray-core/releases/tags"
-	defaultAssetBase    = "https://github.com/XTLS/Xray-core/releases/download"
-	maximumMetadataSize = 1 << 20
-	MaximumArchiveSize  = 128 << 20
+	assetName              = "Xray-linux-64.zip"
+	defaultAPIBase         = "https://api.github.com/repos/XTLS/Xray-core/releases/tags"
+	defaultAssetBase       = "https://github.com/XTLS/Xray-core/releases/download"
+	metadataRequestTimeout = 15 * time.Second
+	assetDownloadTimeout   = 5 * time.Minute
+	maximumMetadataSize    = 1 << 20
+	MaximumArchiveSize     = 128 << 20
 )
 
 type Asset struct {
@@ -36,22 +38,28 @@ type Source interface {
 }
 
 type Client struct {
-	httpClient *http.Client
-	apiBase    string
-	assetBase  string
+	httpClient      *http.Client
+	apiBase         string
+	assetBase       string
+	metadataTimeout time.Duration
+	downloadTimeout time.Duration
 }
 
 func NewClient() *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 15 * time.Second},
-		apiBase:    defaultAPIBase,
-		assetBase:  defaultAssetBase,
+		httpClient:      &http.Client{},
+		apiBase:         defaultAPIBase,
+		assetBase:       defaultAssetBase,
+		metadataTimeout: metadataRequestTimeout,
+		downloadTimeout: assetDownloadTimeout,
 	}
 }
 
 func (client *Client) Resolve(ctx context.Context, version string) (Asset, error) {
+	requestContext, cancel := context.WithTimeout(ctx, effectiveTimeout(client.metadataTimeout, metadataRequestTimeout))
+	defer cancel()
 	endpoint := strings.TrimRight(client.apiBase, "/") + "/v" + url.PathEscape(version)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return Asset{}, fmt.Errorf("create Xray release request: %w", err)
 	}
@@ -115,7 +123,9 @@ func (client *Client) Download(ctx context.Context, asset Asset, destination io.
 	if err := client.validateAsset(asset); err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
+	requestContext, cancel := context.WithTimeout(ctx, effectiveTimeout(client.downloadTimeout, assetDownloadTimeout))
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, asset.URL, nil)
 	if err != nil {
 		return fmt.Errorf("create Xray asset request: %w", err)
 	}
@@ -143,6 +153,13 @@ func (client *Client) Download(ctx context.Context, asset Asset, destination io.
 		return errors.New("official Xray asset SHA-256 does not match release metadata")
 	}
 	return nil
+}
+
+func effectiveTimeout(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func (client *Client) validateAsset(asset Asset) error {
