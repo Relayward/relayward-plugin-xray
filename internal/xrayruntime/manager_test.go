@@ -147,6 +147,12 @@ func TestManagerIgnoresLegacyConfigurationCacheKeyDuringUpgrade(t *testing.T) {
 func TestManagerRestoresPreviousProcessAfterCandidateStartupFailure(t *testing.T) {
 	t.Parallel()
 	manager := testManager(t)
+	manager.connectAPI = func(_ context.Context, configuration config.Configuration) (runtimeAPI, error) {
+		if configuration.VLESSReality.Listen == "127.0.0.2" {
+			return nil, errors.New("candidate API unavailable")
+		}
+		return &fakeRuntimeAPI{}, nil
+	}
 	first := testConfigurationValue(t, "0.0.0.0")
 	if err := manager.Apply(context.Background(), 1, digestA, first); err != nil {
 		t.Fatalf("first Apply() error = %v", err)
