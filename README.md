@@ -35,8 +35,8 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
     "listen": "0.0.0.0",
     "port": 443,
     "public_port": 443,
-    "target": "www.microsoft.com:443",
-    "server_names": ["www.microsoft.com"],
+    "target": "www.cloudflare.com:443",
+    "server_names": ["www.cloudflare.com"],
     "private_key": "base64url-encoded-X25519-private-key",
     "short_ids": ["0123456789abcdef"],
     "flow": "xtls-rprx-vision",
@@ -46,6 +46,8 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
 ```
 
 The administration page generates secrets for a node's first configuration and preserves them during normal edits. Unknown fields, prerelease Xray versions, invalid ports, non-domain REALITY targets, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
+
+The target is a starting value, not a universal deployment choice. It must be reachable from the node, support TLS 1.3, and complete a real REALITY handshake with the selected Xray release; a successful TCP or ordinary TLS probe alone is insufficient.
 
 Each authorization receives a deterministic UUID derived as `HMAC-SHA256(credential_seed, authorization_id + NUL + service_id)`. The UUID is stable for one node configuration, differs between authorizations, and cannot be derived from public Relayward identifiers without the node secret. Subscription rendering repeats the derivation without creating or mutating state.
 

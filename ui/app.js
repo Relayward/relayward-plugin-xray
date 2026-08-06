@@ -123,8 +123,8 @@ function defaults() {
     listen: "0.0.0.0",
     port: 443,
     publicPort: 443,
-    target: "www.microsoft.com:443",
-    serverName: "www.microsoft.com",
+    target: "www.cloudflare.com:443",
+    serverName: "www.cloudflare.com",
     apiPort: 10085,
   };
 }

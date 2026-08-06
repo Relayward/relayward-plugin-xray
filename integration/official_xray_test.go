@@ -23,7 +23,7 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 	apiPort := freePort(t)
 	servicePort := freePort(t)
 	configuration, err := config.NewConfiguration("26.3.27", apiPort, servicePort, servicePort,
-		"www.microsoft.com:443", "www.microsoft.com")
+		"www.cloudflare.com:443", "www.cloudflare.com")
 	if err != nil {
 		t.Fatal(err)
 	}
