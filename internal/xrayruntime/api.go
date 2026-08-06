@@ -87,15 +87,15 @@ func (manager *Manager) ApplyServiceState(ctx context.Context, policyGeneration,
 	if spec == nil || process == nil || process.exited() || process.api == nil {
 		return ErrRuntimeUnavailable
 	}
+	key := serviceKey(authorizationID, serviceID)
+	current := manager.services[key]
 	service, exists := spec.configuration.FindService(serviceID)
-	if !exists {
+	if !exists && enabled {
 		return ErrUnsupportedService
 	}
 	if enabled && !service.Enabled {
 		return ErrServiceDisabled
 	}
-	key := serviceKey(authorizationID, serviceID)
-	current := manager.services[key]
 	if current != nil && (stateRevision < current.stateRevision ||
 		(stateRevision == current.stateRevision && (policyGeneration != current.policyGeneration || enabled != current.enabled))) {
 		return ErrServiceStateConflict
@@ -117,7 +117,7 @@ func (manager *Manager) ApplyServiceState(ctx context.Context, policyGeneration,
 			if err := process.api.addUser(ctx, service.ServiceID, credential); err != nil {
 				return err
 			}
-		} else if current != nil && current.enabled {
+		} else if exists && current != nil && current.enabled {
 			if err := process.api.removeUser(ctx, service.ServiceID,
 				config.UserEmail(authorizationID, serviceID)); err != nil {
 				return err

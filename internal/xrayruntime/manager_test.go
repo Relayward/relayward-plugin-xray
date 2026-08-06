@@ -394,6 +394,23 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 		len(removed.added) != 1 || len(removed.replacements) != 1 || len(removed.replacements[0]) != 1 {
 		t.Fatalf("state after service removal = backup %+v, main %+v, blocks %+v, runtime %+v", backupState, mainState, manager.blocks, removed)
 	}
+	if err := manager.ApplyServiceState(context.Background(), 4, 4, authorizationID, "reality-backup", false); err != nil {
+		t.Fatalf("disable removed service: %v", err)
+	}
+	backupState = manager.services[serviceKey(authorizationID, "reality-backup")]
+	if backupState.enabled || backupState.policyGeneration != 4 || backupState.stateRevision != 4 {
+		t.Fatalf("removed service state = %+v", backupState)
+	}
+	if err := manager.ApplyServiceState(context.Background(), 4, 5, authorizationID, "retired-service", false); err != nil {
+		t.Fatalf("disable unknown retired service: %v", err)
+	}
+	retiredState := manager.services[serviceKey(authorizationID, "retired-service")]
+	if retiredState == nil || retiredState.enabled || retiredState.policyGeneration != 4 || retiredState.stateRevision != 5 {
+		t.Fatalf("retired service state = %+v", retiredState)
+	}
+	if err := manager.ApplyServiceState(context.Background(), 4, 6, authorizationID, "retired-service", true); !errors.Is(err, ErrUnsupportedService) {
+		t.Fatalf("enable unknown retired service error = %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := manager.Close(ctx); err != nil {
