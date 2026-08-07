@@ -135,7 +135,8 @@ func TestInvokeUIReadsAndSavesNodeConfiguration(t *testing.T) {
 	storedConfiguration, err := config.Decode(host.configured.Json)
 	if err != nil || storedConfiguration.CredentialSeed == "" || len(storedConfiguration.Services) != 2 ||
 		storedConfiguration.Services[0].VLESSReality.PrivateKey == "" || len(host.services.Services) != 2 ||
-		len(storedConfiguration.Routing.Rules) != 1 || storedConfiguration.Routing.Rules[0].RuleID != "block-private" {
+		len(storedConfiguration.Routing.Rules) != 1 || storedConfiguration.Routing.Rules[0].RuleID != "block-private" ||
+		!storedConfiguration.DNS.Enabled || len(storedConfiguration.DNS.Servers) != 1 {
 		t.Fatalf("stored configuration = %+v, %v", storedConfiguration, err)
 	}
 	loaded, err := server.InvokeUI(t.Context(), &centerpluginv1.InvokeUIRequest{Method: "configuration.get", Json: missingRequest})
@@ -274,6 +275,12 @@ func testConfigurationJSON(t *testing.T) json.RawMessage {
 		RuleID: "block-private", DisplayName: "Block private", Enabled: true,
 		IPCIDRs: []string{"192.0.2.0/24"}, Action: config.RoutingActionBlocked,
 	}}}
+	value.DNS = config.DNSConfiguration{
+		Enabled: true, QueryStrategy: config.DNSQueryStrategyUseIPv4,
+		Servers: []config.DNSServer{{
+			ServerID: "system", DisplayName: "System DNS", Enabled: true, Transport: config.DNSTransportSystem,
+		}},
+	}
 	raw, err := config.Encode(value)
 	if err != nil {
 		t.Fatal(err)

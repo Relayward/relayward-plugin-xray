@@ -17,10 +17,11 @@
 - recent accepted activity from Xray's online-user Stats API with a persistent telemetry cursor
 - per-authorization dynamic source-IP blocking through Xray's local Routing API
 - ordered static domain-suffix, destination-CIDR, and sniffed-protocol routing to direct or blocked outbounds
+- ordered system, UDP, TCP, and DNS-over-HTTPS resolvers with global IPv4/IPv6 query strategy and per-server domain selection
 - VLESS URI, Mihomo, and sing-box subscription contributions
 - Relayward generation, digest, and health reporting
 
-The current runtime supports up to 64 independently identified VLESS + REALITY + TCP Vision services and 128 static routing rules per node. DNS configuration, additional outbound types, additional protocols and transports, certificates, and full access-log collection are not implemented.
+The current runtime supports up to 64 independently identified VLESS + REALITY + TCP Vision services, 128 static routing rules, and 16 ordered DNS servers per node. Additional outbound types, additional protocols and transports, certificates, and full access-log collection are not implemented.
 
 Recent activity is an online-presence signal rather than a full request log. While an authorization remains online, the plugin emits at most one accepted activity event per authorization, service, and source IP every 30 seconds. The stream ID, sequence cursor, unacknowledged events, and refresh index are stored atomically in a private state file so Agent retries and plugin restarts do not create sequence gaps. Dynamic blocks match authorization email, inbound service, and one source IP together, avoiding collateral blocking of another authorization behind the same NAT. Runtime routing replacement always rebuilds the complete managed rule set in API, dynamic-block, then static-rule order, so a static direct rule cannot bypass a Relayward soft IP block.
 
@@ -64,6 +65,30 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
         "action": "blocked"
       }
     ]
+  },
+  "dns": {
+    "enabled": true,
+    "query_strategy": "use-ipv4",
+    "servers": [
+      {
+        "server_id": "regional",
+        "display_name": "Regional DNS",
+        "enabled": true,
+        "transport": "doh",
+        "address": "https://dns.example.com/dns-query",
+        "port": 0,
+        "domains": ["example.com"]
+      },
+      {
+        "server_id": "system",
+        "display_name": "System DNS",
+        "enabled": true,
+        "transport": "system",
+        "address": "",
+        "port": 0,
+        "domains": []
+      }
+    ]
   }
 }
 ```
@@ -74,7 +99,11 @@ Each service ID is unique within its node configuration and becomes the Xray inb
 
 Static routing rules retain their configured order and have stable rule IDs. Values within one match category are alternatives, while every populated category on a rule must match. A domain value matches that domain and its subdomains; raw Xray expressions and regular expressions are not accepted. IP matches must use canonical IPv4 or IPv6 CIDR notation. Protocol matches are limited to `http`, `tls`, `quic`, and `bittorrent`; Xray reports HTTP/1 traffic as `http1`, which is covered by its `http` protocol-prefix matcher. Rules may send matching traffic only to the built-in `direct` or `blocked` outbound. Domain or protocol rules enable route-only HTTP, TLS, and QUIC sniffing on enabled service inbounds, preserving the original connection target while making the sniffed destination available to routing.
 
-Unknown fields, prerelease Xray versions, duplicate service or rule IDs, conflicting listeners, non-domain REALITY targets, noncanonical CIDRs, unsupported routing expressions, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
+DNS is disabled unless explicitly enabled. Enabling it makes Xray use the configured resolver list for routing fallback and direct outbound domain resolution; disabling it preserves the previous `AsIs` direct-outbound behavior. The global query strategy is `use-ip`, `use-ipv4`, or `use-ipv6`. Servers retain their configured order and may use the system resolver, classic UDP, local TCP, or local DNS-over-HTTPS. UDP and TCP endpoints require a canonical IP address and explicit port. DNS-over-HTTPS endpoints require a credential-free HTTPS URL and are rendered in Xray local mode to avoid recursive bootstrap through the configured resolver chain.
+
+An empty server domain list makes that server a general fallback resolver. A populated list contains lowercase domain suffixes and restricts the server to those domains and their subdomains. When at least one domain-specific server matches, general fallback servers are not queried for that lookup. Disabled servers remain editable in Relayward but are omitted from the generated Xray configuration.
+
+Unknown fields, prerelease Xray versions, duplicate service, rule, or DNS server IDs, conflicting listeners, non-domain REALITY targets, noncanonical addresses or CIDRs, insecure DNS-over-HTTPS URLs, unsupported routing expressions, malformed keys, and trailing JSON are rejected. Relayward stores the opaque configuration through its encrypted plugin-configuration path.
 
 The target is a starting value, not a universal deployment choice. It must be reachable from the node, support TLS 1.3, and complete a real REALITY handshake with the selected Xray release; a successful TCP or ordinary TLS probe alone is insufficient.
 

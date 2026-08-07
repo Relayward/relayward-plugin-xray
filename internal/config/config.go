@@ -26,6 +26,7 @@ const (
 	MaximumServices         = 64
 	MaximumRoutingRules     = 128
 	MaximumRoutingValues    = 64
+	MaximumDNSServers       = 16
 )
 
 var (
@@ -38,6 +39,7 @@ type Configuration struct {
 	CredentialSeed string               `json:"credential_seed"`
 	Services       []Service            `json:"services"`
 	Routing        RoutingConfiguration `json:"routing"`
+	DNS            DNSConfiguration     `json:"dns"`
 }
 
 type Service struct {
@@ -56,6 +58,7 @@ type EditableConfiguration struct {
 	APIPort     uint16               `json:"api_port"`
 	Services    []EditableService    `json:"services"`
 	Routing     RoutingConfiguration `json:"routing"`
+	DNS         DNSConfiguration     `json:"dns"`
 }
 
 type EditableService struct {
@@ -80,7 +83,7 @@ func Editable(value Configuration) EditableConfiguration {
 	}
 	return EditableConfiguration{
 		XrayVersion: value.XrayVersion, APIPort: value.APIPort, Services: services,
-		Routing: cloneRouting(value.Routing),
+		Routing: cloneRouting(value.Routing), DNS: cloneDNS(value.DNS),
 	}
 }
 
@@ -124,6 +127,7 @@ func MergeEditable(configuration Configuration, value EditableConfiguration) (Co
 	sort.Slice(services, func(i, j int) bool { return services[i].ServiceID < services[j].ServiceID })
 	configuration.Services = services
 	configuration.Routing = cloneRouting(value.Routing)
+	configuration.DNS = cloneDNS(value.DNS)
 	if err := Validate(configuration); err != nil {
 		return Configuration{}, err
 	}
@@ -192,6 +196,9 @@ func Validate(value Configuration) error {
 		}
 	}
 	if err := validateRouting(value.Routing); err != nil {
+		return err
+	}
+	if err := validateDNS(value.DNS); err != nil {
 		return err
 	}
 	return nil
@@ -270,6 +277,7 @@ func clone(value Configuration) Configuration {
 		value.Services[index].VLESSReality = cloneVLESSReality(value.Services[index].VLESSReality)
 	}
 	value.Routing = cloneRouting(value.Routing)
+	value.DNS = cloneDNS(value.DNS)
 	return value
 }
 

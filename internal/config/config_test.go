@@ -13,6 +13,7 @@ func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) 
 		t.Fatal(err)
 	}
 	value.Routing = testRoutingConfiguration()
+	value.DNS = testDNSConfiguration()
 	raw, err := Encode(value)
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +24,8 @@ func TestConfigurationRoundTripsTypedServicesAndStableCredentials(t *testing.T) 
 	}
 	if decoded.XrayVersion != "26.3.27" || len(decoded.Services) != 2 || decoded.Services[0].ServiceID != "reality-backup" ||
 		decoded.Services[1].ServiceID != "reality-main" || len(decoded.Routing.Rules) != 2 ||
-		decoded.Routing.Rules[0].RuleID != "block-private" {
+		decoded.Routing.Rules[0].RuleID != "block-private" || !decoded.DNS.Enabled ||
+		len(decoded.DNS.Servers) != 2 || decoded.DNS.Servers[0].ServerID != "regional" {
 		t.Fatalf("configuration = %+v", decoded)
 	}
 	first, err := DeriveCredential(decoded.CredentialSeed, "10000000-0000-4000-8000-000000000001", "reality-main")
@@ -136,8 +138,11 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 		t.Fatal(err)
 	}
 	value.Routing = testRoutingConfiguration()
+	value.DNS = testDNSConfiguration()
 	editable := Editable(value)
 	editable.Routing.Rules[0].DisplayName = "Updated route"
+	editable.DNS.Servers[0].DisplayName = "Updated regional DNS"
+	editable.DNS.Servers[0].Domains[0] = "updated.example.com"
 	editable.Services[0].DisplayName = "Updated Main"
 	editable.Services = append(editable.Services, testEditableServices()[1])
 	merged, err := MergeEditable(value, editable)
@@ -150,7 +155,10 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 		main.VLESSReality.PrivateKey != value.Services[0].VLESSReality.PrivateKey ||
 		main.VLESSReality.ShortIDs[0] != value.Services[0].VLESSReality.ShortIDs[0] ||
 		main.DisplayName != "Updated Main" || merged.Routing.Rules[0].DisplayName != "Updated route" ||
-		value.Routing.Rules[0].DisplayName != "Block private destinations" {
+		merged.DNS.Servers[0].DisplayName != "Updated regional DNS" ||
+		merged.DNS.Servers[0].Domains[0] != "updated.example.com" ||
+		value.Routing.Rules[0].DisplayName != "Block private destinations" ||
+		value.DNS.Servers[0].Domains[0] != "regional.example.com" {
 		t.Fatalf("MergeEditable() changed protected existing configuration: %+v", merged)
 	}
 	if backup.VLESSReality.PrivateKey == "" || backup.VLESSReality.PrivateKey == value.Services[0].VLESSReality.PrivateKey ||
@@ -166,11 +174,85 @@ func TestEditableConfigurationPreservesExistingSecretsAndGeneratesNewServiceSecr
 	}
 	deleted, err := MergeEditable(merged, EditableConfiguration{
 		XrayVersion: editable.XrayVersion, APIPort: editable.APIPort, Services: editable.Services[1:],
-		Routing: editable.Routing,
+		Routing: editable.Routing, DNS: editable.DNS,
 	})
 	if err != nil || len(deleted.Services) != 1 || deleted.Services[0].ServiceID != "reality-backup" ||
 		deleted.Services[0].VLESSReality.PrivateKey != backup.VLESSReality.PrivateKey {
 		t.Fatalf("MergeEditable(delete) = %+v, %v", deleted, err)
+	}
+}
+
+func TestDNSValidationRejectsUnsafeOrAmbiguousServers(t *testing.T) {
+	t.Parallel()
+	valid, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid.DNS = testDNSConfiguration()
+	tests := map[string]func(*Configuration){
+		"invalid strategy": func(value *Configuration) { value.DNS.QueryStrategy = "prefer-ipv4" },
+		"no enabled server": func(value *Configuration) {
+			for index := range value.DNS.Servers {
+				value.DNS.Servers[index].Enabled = false
+			}
+		},
+		"invalid ID":       func(value *Configuration) { value.DNS.Servers[0].ServerID = "Invalid ID" },
+		"duplicate ID":     func(value *Configuration) { value.DNS.Servers[1].ServerID = value.DNS.Servers[0].ServerID },
+		"missing UDP port": func(value *Configuration) { value.DNS.Servers[0].Port = 0 },
+		"noncanonical IP":  func(value *Configuration) { value.DNS.Servers[0].Address = "192.0.2.01" },
+		"system endpoint": func(value *Configuration) {
+			value.DNS.Servers[1].Address = "127.0.0.1"
+		},
+		"uppercase domain": func(value *Configuration) { value.DNS.Servers[0].Domains[0] = "Example.com" },
+		"duplicate domain": func(value *Configuration) {
+			value.DNS.Servers[0].Domains = append(value.DNS.Servers[0].Domains, value.DNS.Servers[0].Domains[0])
+		},
+		"insecure DoH": func(value *Configuration) {
+			value.DNS.Servers[1] = DNSServer{
+				ServerID: "doh", DisplayName: "DoH", Enabled: true, Transport: DNSTransportDoH,
+				Address: "http://dns.example.com/dns-query",
+			}
+		},
+		"too many servers": func(value *Configuration) {
+			for len(value.DNS.Servers) <= MaximumDNSServers {
+				server := value.DNS.Servers[0]
+				server.ServerID = fmt.Sprintf("dns-%d", len(value.DNS.Servers))
+				value.DNS.Servers = append(value.DNS.Servers, server)
+			}
+		},
+	}
+	for name, mutate := range tests {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			candidate := clone(valid)
+			mutate(&candidate)
+			if err := Validate(candidate); err == nil {
+				t.Fatal("Validate() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+func TestDNSValidationAcceptsSupportedTransportsAndDisabledDefault(t *testing.T) {
+	t.Parallel()
+	value, err := NewConfiguration("26.3.27", 10085, testEditableServices()[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(value); err != nil {
+		t.Fatalf("disabled default DNS rejected: %v", err)
+	}
+	value.DNS = DNSConfiguration{
+		Enabled: true, QueryStrategy: DNSQueryStrategyUseIPv6,
+		Servers: []DNSServer{
+			{ServerID: "udp", DisplayName: "UDP", Enabled: true, Transport: DNSTransportUDP, Address: "2001:4860:4860::8888", Port: 53},
+			{ServerID: "tcp", DisplayName: "TCP", Enabled: true, Transport: DNSTransportTCP, Address: "1.1.1.1", Port: 853},
+			{ServerID: "doh", DisplayName: "DoH", Enabled: true, Transport: DNSTransportDoH, Address: "https://dns.google/dns-query"},
+		},
+	}
+	if err := Validate(value); err != nil {
+		t.Fatalf("supported DNS configuration rejected: %v", err)
 	}
 }
 
@@ -250,4 +332,18 @@ func testRoutingConfiguration() RoutingConfiguration {
 			Protocols: []string{"http", "tls"}, Action: RoutingActionDirect,
 		},
 	}}
+}
+
+func testDNSConfiguration() DNSConfiguration {
+	return DNSConfiguration{
+		Enabled: true, QueryStrategy: DNSQueryStrategyUseIPv4,
+		Servers: []DNSServer{
+			{
+				ServerID: "regional", DisplayName: "Regional DNS", Enabled: true,
+				Transport: DNSTransportUDP, Address: "1.1.1.1", Port: 53,
+				Domains: []string{"regional.example.com"},
+			},
+			{ServerID: "system", DisplayName: "System DNS", Enabled: true, Transport: DNSTransportSystem},
+		},
+	}
 }

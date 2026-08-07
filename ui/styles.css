@@ -237,7 +237,8 @@ button:disabled {
 }
 
 .service-list,
-.routing-rule-list {
+.routing-rule-list,
+.dns-server-list {
   display: grid;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -245,7 +246,8 @@ button:disabled {
 }
 
 .service-row,
-.routing-rule-row {
+.routing-rule-row,
+.dns-server-row {
   display: grid;
   grid-template-columns: minmax(12rem, 1.2fr) minmax(12rem, 1fr) auto;
   align-items: center;
@@ -254,17 +256,20 @@ button:disabled {
   padding: 1rem;
 }
 
-.routing-rule-row {
+.routing-rule-row,
+.dns-server-row {
   grid-template-columns: minmax(12rem, 1.1fr) minmax(14rem, 1fr) auto;
 }
 
 .service-row + .service-row,
-.routing-rule-row + .routing-rule-row {
+.routing-rule-row + .routing-rule-row,
+.dns-server-row + .dns-server-row {
   border-top: 1px solid var(--border);
 }
 
 .service-row:hover,
-.routing-rule-row:hover {
+.routing-rule-row:hover,
+.dns-server-row:hover {
   background: color-mix(in oklab, var(--muted) 45%, transparent);
 }
 
@@ -321,11 +326,34 @@ button:disabled {
   line-height: 1.25rem;
 }
 
-.routing-rule-actions {
+.routing-rule-actions,
+.dns-server-actions {
   display: flex;
   align-items: center;
   justify-content: end;
   gap: 0.375rem;
+}
+
+.dns-settings {
+  max-width: 24rem;
+  margin-bottom: 1.5rem;
+}
+
+.subsection-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1.5rem;
+}
+
+.subsection-header p {
+  margin-top: 0.25rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1rem;
 }
 
 .list-empty {
@@ -613,11 +641,21 @@ button:disabled {
     gap: 0.75rem;
   }
 
+  .dns-server-row {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
   .service-actions {
     justify-content: stretch;
   }
 
   .routing-rule-actions {
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+
+  .dns-server-actions {
     justify-content: stretch;
     flex-wrap: wrap;
   }
@@ -628,6 +666,15 @@ button:disabled {
 
   .routing-rule-actions .button {
     flex: 1 1 0;
+  }
+
+  .dns-server-actions .button {
+    flex: 1 1 0;
+  }
+
+  .subsection-header {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .node-controls {

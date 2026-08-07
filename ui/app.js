@@ -13,6 +13,7 @@ const messages = {
   "Refresh": "刷新",
   "Services": "服务",
   "Routing": "路由",
+  "DNS": "DNS",
   "Runtime": "运行时",
   "Proxy services": "代理服务",
   "Independent listeners published by this node": "此节点发布的独立监听服务",
@@ -24,6 +25,18 @@ const messages = {
   "Add rule": "新增规则",
   "No static routing rules": "尚未配置静态路由规则",
   "Unmatched traffic uses the direct outbound": "未匹配的流量使用直连出站",
+  "DNS resolution": "DNS 解析",
+  "Ordered resolvers for Xray routing and direct outbound connections": "用于 Xray 路由和直连出站的有序解析服务器",
+  "Query strategy": "查询策略",
+  "IPv4 and IPv6": "IPv4 和 IPv6",
+  "IPv4 only": "仅 IPv4",
+  "IPv6 only": "仅 IPv6",
+  "DNS servers": "DNS 服务器",
+  "Servers are queried in the configured order": "按配置顺序查询服务器",
+  "Add server": "新增服务器",
+  "No DNS servers configured": "尚未配置 DNS 服务器",
+  "Add and enable a server before enabling DNS": "启用 DNS 前请新增并启用至少一个服务器",
+  "Enabled DNS requires at least one enabled server.": "启用 DNS 时至少需要一个已启用的服务器。",
   "Local runtime": "本地运行时",
   "Xray release and private control endpoint": "Xray 版本与私有控制端点",
   "Xray version": "Xray 版本",
@@ -82,6 +95,24 @@ const messages = {
   "Move down": "下移",
   "No match values configured.": "至少需要配置一个匹配项。",
   "Domains {domains} · CIDRs {cidrs} · Protocols {protocols}": "域名 {domains} · CIDR {cidrs} · 协议 {protocols}",
+  "Configure one ordered DNS resolver": "配置一个有顺序的 DNS 解析服务器",
+  "Server ID": "服务器 ID",
+  "Server ID already exists.": "服务器 ID 已存在。",
+  "A node can contain at most 16 DNS servers.": "一个节点最多可配置 16 个 DNS 服务器。",
+  "Transport": "传输方式",
+  "System resolver": "系统解析器",
+  "DNS over HTTPS": "DNS over HTTPS",
+  "Resolver endpoint": "解析端点",
+  "Address": "地址",
+  "Port": "端口",
+  "Domain selection": "域名选择",
+  "Leave empty to use this server as a general resolver": "留空时将此服务器用作通用解析器",
+  "Apply server": "应用服务器",
+  "Add DNS server": "新增 DNS 服务器",
+  "Edit DNS server": "编辑 DNS 服务器",
+  "Delete DNS server": "删除 DNS 服务器",
+  "Delete {name}? The server remains active until you save the configuration.": "删除 {name}？保存配置前，该服务器仍保持生效。",
+  "Domains {domains}": "域名 {domains}",
   "Online": "在线",
   "Offline": "离线",
   "Generation {generation}": "第 {generation} 代配置",
@@ -102,6 +133,8 @@ let services = [];
 let editingServiceID = null;
 let routingRules = [];
 let editingRoutingRuleID = null;
+let dnsConfiguration = defaultDNSConfiguration();
+let editingDNSServerID = null;
 let busy = false;
 
 function text(message, values = {}) {
@@ -119,10 +152,13 @@ function translatePage() {
   elements.closeServiceDialog.setAttribute("aria-label", text("Close"));
   elements.closeRoutingRuleDialog.title = text("Close");
   elements.closeRoutingRuleDialog.setAttribute("aria-label", text("Close"));
+  elements.closeDnsServerDialog.title = text("Close");
+  elements.closeDnsServerDialog.setAttribute("aria-label", text("Close"));
   updateNodeStatus();
   updateGeneration();
   renderServices();
   renderRoutingRules();
+  renderDNSServers();
 }
 
 function showError(cause) {
@@ -149,9 +185,13 @@ function setBusy(value, label) {
   elements.saveButton.disabled = value;
   elements.addServiceButton.disabled = value;
   elements.addRoutingRuleButton.disabled = value;
+  elements.addDnsServerButton.disabled = value;
+  elements.dnsEnabled.disabled = value;
+  elements.dnsQueryStrategy.disabled = value;
   elements.saveButton.textContent = value && label === "save" ? text("Saving...") : text("Save configuration");
   renderServices();
   renderRoutingRules();
+  renderDNSServers();
 }
 
 function updateNodeStatus() {
@@ -227,10 +267,38 @@ function cloneRoutingRules(values) {
   }));
 }
 
+function defaultDNSConfiguration() {
+  return {
+    enabled: false,
+    query_strategy: "use-ip",
+    servers: [{
+      server_id: "system",
+      display_name: locale === "zh-CN" ? "系统 DNS" : "System DNS",
+      enabled: true,
+      transport: "system",
+      address: "",
+      port: 0,
+      domains: [],
+    }],
+  };
+}
+
+function cloneDNSConfiguration(value) {
+  return {
+    enabled: value?.enabled === true,
+    query_strategy: value?.query_strategy || "use-ip",
+    servers: Array.isArray(value?.servers) ? value.servers.map((server) => ({
+      ...server,
+      domains: [...(server.domains ?? [])],
+    })) : [],
+  };
+}
+
 function populateConfiguration() {
   const configuration = stored?.exists ? stored.configuration : undefined;
   services = [];
   routingRules = [];
+  dnsConfiguration = defaultDNSConfiguration();
   if (configuration == null) {
     elements.xrayVersion.value = "26.3.27";
     elements.apiPort.value = "10085";
@@ -240,9 +308,15 @@ function populateConfiguration() {
     elements.apiPort.value = String(configuration.api_port);
     services = cloneServices(Array.isArray(configuration.services) ? configuration.services : []);
     routingRules = cloneRoutingRules(Array.isArray(configuration.routing?.rules) ? configuration.routing.rules : []);
+    if (configuration.dns?.query_strategy || (configuration.dns?.servers?.length ?? 0) > 0) {
+      dnsConfiguration = cloneDNSConfiguration(configuration.dns);
+    }
   }
+  elements.dnsEnabled.checked = dnsConfiguration.enabled;
+  elements.dnsQueryStrategy.value = dnsConfiguration.query_strategy;
   renderServices();
   renderRoutingRules();
+  renderDNSServers();
   updateGeneration();
 }
 
@@ -385,6 +459,226 @@ function moveRoutingRule(index, offset) {
   showPendingNotice();
 }
 
+function nextDNSServerDefaults() {
+  let suffix = dnsConfiguration.servers.length + 1;
+  let serverID = `dns-server-${suffix}`;
+  while (dnsConfiguration.servers.some((server) => server.server_id === serverID)) {
+    suffix += 1;
+    serverID = `dns-server-${suffix}`;
+  }
+  return {
+    server_id: serverID,
+    display_name: locale === "zh-CN" ? `DNS 服务器 ${suffix}` : `DNS server ${suffix}`,
+    enabled: true,
+    transport: "udp",
+    address: "1.1.1.1",
+    port: 53,
+    domains: [],
+  };
+}
+
+function dnsTransportLabel(transport) {
+  if (transport === "system") return text("System resolver");
+  if (transport === "doh") return text("DNS over HTTPS");
+  return transport.toUpperCase();
+}
+
+function dnsEndpoint(server) {
+  if (server.transport === "system") return text("System resolver");
+  if (server.transport === "doh") return server.address;
+  const address = server.address.includes(":") ? `[${server.address}]` : server.address;
+  return `${address}:${server.port}`;
+}
+
+function dnsServerRow(server, index) {
+  const row = document.createElement("article");
+  row.className = "dns-server-row";
+
+  const identity = document.createElement("div");
+  identity.className = "service-identity";
+  const heading = document.createElement("div");
+  heading.className = "service-name-line";
+  const name = document.createElement("strong");
+  name.textContent = server.display_name;
+  const status = document.createElement("span");
+  status.className = `badge service-status${server.enabled ? " connected" : ""}`;
+  status.textContent = server.enabled ? text("Enabled status") : text("Disabled status");
+  heading.append(name, status);
+  const identifier = document.createElement("span");
+  identifier.className = "service-id";
+  identifier.textContent = server.server_id;
+  identity.append(heading, identifier);
+
+  const endpoint = document.createElement("div");
+  endpoint.className = "service-network";
+  const transport = document.createElement("span");
+  transport.textContent = dnsTransportLabel(server.transport);
+  const address = document.createElement("span");
+  address.textContent = dnsEndpoint(server);
+  const domains = document.createElement("span");
+  domains.textContent = text("Domains {domains}", { domains: server.domains?.length ?? 0 });
+  endpoint.append(transport, address, domains);
+
+  const actions = document.createElement("div");
+  actions.className = "dns-server-actions";
+  const moveUp = document.createElement("button");
+  moveUp.className = "icon-button";
+  moveUp.type = "button";
+  moveUp.disabled = busy || index === 0;
+  moveUp.title = text("Move up");
+  moveUp.setAttribute("aria-label", text("Move up"));
+  moveUp.textContent = "↑";
+  moveUp.addEventListener("click", () => moveDNSServer(index, -1));
+  const moveDown = document.createElement("button");
+  moveDown.className = "icon-button";
+  moveDown.type = "button";
+  moveDown.disabled = busy || index === dnsConfiguration.servers.length - 1;
+  moveDown.title = text("Move down");
+  moveDown.setAttribute("aria-label", text("Move down"));
+  moveDown.textContent = "↓";
+  moveDown.addEventListener("click", () => moveDNSServer(index, 1));
+  const edit = document.createElement("button");
+  edit.className = "button button-outline button-compact";
+  edit.type = "button";
+  edit.disabled = busy;
+  edit.textContent = text("Edit");
+  edit.addEventListener("click", () => openDNSServerDialog(server.server_id));
+  const remove = document.createElement("button");
+  remove.className = "button button-ghost-destructive button-compact";
+  remove.type = "button";
+  remove.disabled = busy;
+  remove.textContent = text("Delete");
+  remove.addEventListener("click", () => void removeDNSServer(server.server_id));
+  actions.append(moveUp, moveDown, edit, remove);
+
+  row.append(identity, endpoint, actions);
+  return row;
+}
+
+function renderDNSServers() {
+  elements.dnsServerList.replaceChildren(...dnsConfiguration.servers.map(dnsServerRow));
+  elements.dnsServerListEmpty.hidden = dnsConfiguration.servers.length !== 0;
+}
+
+function moveDNSServer(index, offset) {
+  const target = index + offset;
+  if (busy || target < 0 || target >= dnsConfiguration.servers.length) return;
+  [dnsConfiguration.servers[index], dnsConfiguration.servers[target]] = [dnsConfiguration.servers[target], dnsConfiguration.servers[index]];
+  renderDNSServers();
+  showPendingNotice();
+}
+
+function populateDNSServerDialog(server) {
+  elements.dnsServerEnabled.checked = server.enabled;
+  elements.dnsServerId.value = server.server_id;
+  elements.dnsServerId.disabled = editingDNSServerID != null;
+  elements.dnsServerDisplayName.value = server.display_name;
+  elements.dnsTransport.value = server.transport;
+  elements.dnsAddress.value = server.address;
+  elements.dnsPort.value = server.port === 0 ? "" : String(server.port);
+  elements.dnsDomains.value = (server.domains ?? []).join("\n");
+  elements.dnsServerId.setCustomValidity("");
+  updateDNSEndpointFields(false);
+}
+
+function updateDNSEndpointFields(applyDefaults = true) {
+  const transport = elements.dnsTransport.value;
+  const system = transport === "system";
+  const doh = transport === "doh";
+  elements.dnsEndpointSection.hidden = system;
+  elements.dnsAddressField.hidden = system;
+  elements.dnsPortField.hidden = system || doh;
+  elements.dnsAddress.disabled = system;
+  elements.dnsAddress.required = !system;
+  elements.dnsPort.disabled = system || doh;
+  elements.dnsPort.required = !system && !doh;
+  if (!applyDefaults) return;
+  if (system) {
+    elements.dnsAddress.value = "";
+    elements.dnsPort.value = "";
+  } else if (doh) {
+    if (!elements.dnsAddress.value.startsWith("https://")) elements.dnsAddress.value = "https://1.1.1.1/dns-query";
+    elements.dnsAddress.placeholder = "https://1.1.1.1/dns-query";
+    elements.dnsPort.value = "";
+  } else {
+    if (elements.dnsAddress.value === "" || elements.dnsAddress.value.startsWith("https://")) elements.dnsAddress.value = "1.1.1.1";
+    elements.dnsAddress.placeholder = "1.1.1.1";
+    if (elements.dnsPort.value === "") elements.dnsPort.value = "53";
+  }
+}
+
+function openDNSServerDialog(serverID = null) {
+  if (busy) return;
+  if (serverID == null && dnsConfiguration.servers.length >= 16) {
+    showError(new Error(text("A node can contain at most 16 DNS servers.")));
+    return;
+  }
+  editingDNSServerID = serverID;
+  const server = serverID == null ? nextDNSServerDefaults() : dnsConfiguration.servers.find((candidate) => candidate.server_id === serverID);
+  if (server == null) return;
+  elements.dnsServerDialogTitle.textContent = text(serverID == null ? "Add DNS server" : "Edit DNS server");
+  populateDNSServerDialog(server);
+  elements.dnsServerDialog.showModal();
+}
+
+function closeDNSServerDialog() {
+  editingDNSServerID = null;
+  elements.dnsServerDialog.close();
+}
+
+function dnsServerFromDialog() {
+  const transport = elements.dnsTransport.value;
+  return {
+    server_id: elements.dnsServerId.value.trim(),
+    display_name: elements.dnsServerDisplayName.value.trim(),
+    enabled: elements.dnsServerEnabled.checked,
+    transport,
+    address: transport === "system" ? "" : elements.dnsAddress.value.trim(),
+    port: transport === "system" || transport === "doh" ? 0 : numberValue("dns-port"),
+    domains: lines(elements.dnsDomains.value),
+  };
+}
+
+function applyDNSServer(event) {
+  event.preventDefault();
+  const candidate = dnsServerFromDialog();
+  const duplicate = dnsConfiguration.servers.some((server) => server.server_id === candidate.server_id && server.server_id !== editingDNSServerID);
+  elements.dnsServerId.setCustomValidity(duplicate ? text("Server ID already exists.") : "");
+  if (!elements.dnsServerForm.reportValidity()) return;
+  if (editingDNSServerID == null) {
+    dnsConfiguration.servers.push(candidate);
+  } else {
+    const index = dnsConfiguration.servers.findIndex((server) => server.server_id === editingDNSServerID);
+    if (index < 0) return;
+    dnsConfiguration.servers[index] = candidate;
+  }
+  closeDNSServerDialog();
+  renderDNSServers();
+  showPendingNotice();
+}
+
+async function removeDNSServer(serverID) {
+  if (busy) return;
+  const server = dnsConfiguration.servers.find((candidate) => candidate.server_id === serverID);
+  if (server == null) return;
+  let confirmed;
+  try {
+    confirmed = await client.confirm({
+      title: text("Delete DNS server"),
+      message: text("Delete {name}? The server remains active until you save the configuration.", { name: server.display_name }),
+      confirm_label: text("Delete"),
+      destructive: true,
+    });
+  } catch (cause) {
+    showError(cause);
+    return;
+  }
+  if (!confirmed) return;
+  dnsConfiguration.servers = dnsConfiguration.servers.filter((candidate) => candidate.server_id !== serverID);
+  renderDNSServers();
+  showPendingNotice();
+}
+
 async function loadConfiguration() {
   if (selectedNode == null) return;
   clearMessages();
@@ -421,17 +715,24 @@ async function loadServiceTypes() {
 }
 
 function configurationForSave() {
+  dnsConfiguration.enabled = elements.dnsEnabled.checked;
+  dnsConfiguration.query_strategy = elements.dnsQueryStrategy.value;
   return {
     xray_version: elements.xrayVersion.value.trim(),
     api_port: numberValue("api-port"),
     services: cloneServices(services).sort((first, second) => first.service_id.localeCompare(second.service_id)),
     routing: { rules: cloneRoutingRules(routingRules) },
+    dns: cloneDNSConfiguration(dnsConfiguration),
   };
 }
 
 async function saveConfiguration(event) {
   event.preventDefault();
   if (busy || selectedNode == null || !elements.configurationForm.reportValidity()) return;
+  if (elements.dnsEnabled.checked && !dnsConfiguration.servers.some((server) => server.enabled)) {
+    showError(new Error(text("Enabled DNS requires at least one enabled server.")));
+    return;
+  }
   clearMessages();
   setBusy(true, "save");
   try {
@@ -679,6 +980,9 @@ elements.nodeSelect.addEventListener("change", () => {
 elements.refreshButton.addEventListener("click", () => void refreshNodes());
 elements.addServiceButton.addEventListener("click", () => openServiceDialog());
 elements.addRoutingRuleButton.addEventListener("click", () => openRoutingRuleDialog());
+elements.addDnsServerButton.addEventListener("click", () => openDNSServerDialog());
+elements.dnsEnabled.addEventListener("change", showPendingNotice);
+elements.dnsQueryStrategy.addEventListener("change", showPendingNotice);
 elements.closeServiceDialog.addEventListener("click", closeServiceDialog);
 elements.cancelServiceButton.addEventListener("click", closeServiceDialog);
 elements.serviceId.addEventListener("input", () => elements.serviceId.setCustomValidity(""));
@@ -689,6 +993,11 @@ elements.routingRuleId.addEventListener("input", () => elements.routingRuleId.se
 elements.routingDomains.addEventListener("input", () => elements.routingDomains.setCustomValidity(""));
 elements.routingIpCidrs.addEventListener("input", () => elements.routingDomains.setCustomValidity(""));
 elements.routingRuleForm.addEventListener("submit", applyRoutingRule);
+elements.closeDnsServerDialog.addEventListener("click", closeDNSServerDialog);
+elements.cancelDnsServerButton.addEventListener("click", closeDNSServerDialog);
+elements.dnsServerId.addEventListener("input", () => elements.dnsServerId.setCustomValidity(""));
+elements.dnsTransport.addEventListener("change", () => updateDNSEndpointFields());
+elements.dnsServerForm.addEventListener("submit", applyDNSServer);
 elements.configurationForm.addEventListener("submit", (event) => void saveConfiguration(event));
 window.addEventListener("pagehide", () => client.dispose(), { once: true });
 

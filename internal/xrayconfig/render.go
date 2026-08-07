@@ -34,6 +34,12 @@ func Render(value config.Configuration) ([]byte, error) {
 		}
 		inbounds = append(inbounds, inbound)
 	}
+	directSettings := map[string]any{}
+	routing := map[string]any{"rules": renderRoutingRules(routingRules)}
+	if value.DNS.Enabled {
+		directSettings["domainStrategy"] = xrayDNSQueryStrategy(value.DNS.QueryStrategy)
+		routing["domainStrategy"] = "IPIfNonMatch"
+	}
 	result := map[string]any{
 		"log": map[string]any{"loglevel": "warning"},
 		"api": map[string]any{"tag": "relayward-api", "services": []string{
@@ -41,14 +47,17 @@ func Render(value config.Configuration) ([]byte, error) {
 		}},
 		"inbounds": inbounds,
 		"outbounds": []any{
-			map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}},
+			map[string]any{"tag": "direct", "protocol": "freedom", "settings": directSettings},
 			map[string]any{"tag": "blocked", "protocol": "blackhole", "settings": map[string]any{}},
 		},
 		"policy": map[string]any{"levels": map[string]any{"0": map[string]any{
 			"statsUserUplink": true, "statsUserDownlink": true, "statsUserOnline": true,
 		}}},
-		"routing": map[string]any{"rules": renderRoutingRules(routingRules)},
+		"routing": routing,
 		"stats":   map[string]any{},
+	}
+	if value.DNS.Enabled {
+		result["dns"] = renderDNS(value.DNS)
 	}
 	return json.Marshal(result)
 }

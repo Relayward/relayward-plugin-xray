@@ -52,6 +52,24 @@ func TestOfficialXrayLifecycle(t *testing.T) {
 			Domains: []string{"example.com"}, Protocols: []string{"tls"}, Action: config.RoutingActionDirect,
 		},
 	}}
+	configuration.DNS = config.DNSConfiguration{
+		Enabled: true, QueryStrategy: config.DNSQueryStrategyUseIPv4,
+		Servers: []config.DNSServer{
+			{ServerID: "system", DisplayName: "System DNS", Enabled: true, Transport: config.DNSTransportSystem},
+			{
+				ServerID: "udp", DisplayName: "UDP DNS", Enabled: true, Transport: config.DNSTransportUDP,
+				Address: "1.1.1.1", Port: 53, Domains: []string{"example.com"},
+			},
+			{
+				ServerID: "tcp", DisplayName: "TCP DNS", Enabled: true, Transport: config.DNSTransportTCP,
+				Address: "2001:4860:4860::8888", Port: 53, Domains: []string{"example.net"},
+			},
+			{
+				ServerID: "doh", DisplayName: "DoH", Enabled: true, Transport: config.DNSTransportDoH,
+				Address: "https://1.1.1.1/dns-query", Domains: []string{"example.org"},
+			},
+		},
+	}
 	raw, err := config.Encode(configuration)
 	if err != nil {
 		t.Fatal(err)
