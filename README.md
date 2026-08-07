@@ -119,8 +119,19 @@ The node plugin queries the fixed official `XTLS/Xray-core` GitHub Release endpo
 go test ./...
 go vet ./...
 go build ./...
+
+cd ui
+npm ci
+npm run typecheck
+npm run lint
+npm test
+npm run build
+cd ..
+
 ./scripts/build-release.sh 0.0.0-dev /tmp/relayward-plugin-xray-release
 ```
+
+Run `npm run dev` from `ui/` for local UI development. The page is a sandboxed iframe application and communicates with Relayward through the vendored UI SDK; a host simulator is required for standalone browser interaction.
 
 Release builds contain `relayward-plugin.json`, separate center and node Linux AMD64 artifacts, the sandboxed UI archive, and `SHA256SUMS`.
 

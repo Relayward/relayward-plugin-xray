@@ -23,8 +23,18 @@ jobs:
         with:
           go-version: 1.26.x
           cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
       - name: Verify
         run: |
+          npm --prefix ui run typecheck
+          npm --prefix ui run lint
+          npm --prefix ui test
           go test ./...
           go vet ./...
           shellcheck scripts/build-release.sh
@@ -38,4 +48,3 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: dist/*
-

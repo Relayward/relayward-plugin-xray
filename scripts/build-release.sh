@@ -23,6 +23,7 @@ mkdir -p "$OUTPUT_DIRECTORY"
 CENTER="$OUTPUT_DIRECTORY/relayward-plugin-xray-center-linux-amd64"
 NODE="$OUTPUT_DIRECTORY/relayward-plugin-xray-node-linux-amd64"
 UI="$OUTPUT_DIRECTORY/relayward-plugin-xray-ui.tar.gz"
+npm --prefix "$ROOT/ui" run build
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath -buildvcs=false \
     -ldflags "-s -w -buildid= -X main.version=$VERSION" \
@@ -34,7 +35,7 @@ fi
 cp "$CENTER" "$NODE"
 chmod 0755 "$CENTER" "$NODE"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-    -cf - -C "$ROOT/ui" app.js index.html styles.css vendor | gzip -n > "$UI"
+    -cf - -C "$ROOT/ui/dist" . | gzip -n > "$UI"
 go run ./cmd/relayward-plugin-xray-release -dist "$OUTPUT_DIRECTORY" -version "$VERSION"
 (
     cd "$OUTPUT_DIRECTORY"

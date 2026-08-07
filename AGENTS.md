@@ -31,6 +31,15 @@ The Relayward control plane, Agent runtime, shared SDK contracts, risk analysis,
 - Surface failures explicitly. Do not report a healthy generation until the matching Xray process is running.
 - Preserve the last healthy process and configuration when candidate validation or startup fails.
 
+## Plugin UI
+
+- Build the administration page as an independent React, Vite, TypeScript, Tailwind CSS, and shadcn/ui iframe application. Do not depend on the control plane's React instance or private component paths.
+- Use `shadcnstore/shadcn-dashboard-landing-template` as the approved visual and interaction baseline. Copy only the template components that are actually used, preserve applicable license notices, and keep their structure and original classes unless a build, accessibility, or responsive defect requires a focused correction.
+- Prefer the copied shadcn components and Lucide icons over handwritten buttons, dialogs, inputs, selects, tabs, tooltips, badges, switches, or a second component system.
+- Use the semantic design tokens supplied by the Relayward UI SDK. Obtain locale, theme, RPC, navigation, and confirmation behavior through the versioned UI SDK; do not access the parent DOM or invent plugin-specific bridge messages.
+- Default to Simplified Chinese and support English according to the host context. Support light and dark themes, a minimum width of 320px, keyboard interaction, visible focus states, and layouts without whole-page overflow or overlapping content.
+- Package only the Vite production output in the UI release archive. Do not preserve the retired handwritten UI as a parallel implementation.
+
 ## Git And Releases
 
 - Keep commits, tags, releases, and release notes within this repository.
@@ -45,6 +54,12 @@ Run the checks relevant to each change:
 - `go test ./...`
 - `go vet ./...`
 - `go build ./...`
+- `npm --prefix ui run typecheck`
+- `npm --prefix ui run lint`
+- `npm --prefix ui test`
+- `npm --prefix ui run build`
 - release script and manifest validation when packaging changes
+
+For material UI changes, also exercise the iframe through the real UI SDK message protocol in a browser at desktop and 320px widths, in Simplified Chinese and English, and in light and dark themes.
 
 Prefer deterministic fake-Xray lifecycle tests during development. Use the real official artifact only for focused integration validation.
