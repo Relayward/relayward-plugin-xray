@@ -30,7 +30,8 @@ const (
 )
 
 var (
-	serviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	serviceIDPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	publicDomainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$`)
 )
 
 type Configuration struct {
@@ -49,6 +50,7 @@ type Service struct {
 	DisplayName  string        `json:"display_name"`
 	Listen       string        `json:"listen"`
 	Port         uint16        `json:"port"`
+	PublicHost   string        `json:"public_host"`
 	PublicPort   uint16        `json:"public_port"`
 	VLESSReality *VLESSReality `json:"vless_reality,omitempty"`
 }
@@ -68,6 +70,7 @@ type EditableService struct {
 	DisplayName  string                `json:"display_name"`
 	Listen       string                `json:"listen"`
 	Port         uint16                `json:"port"`
+	PublicHost   string                `json:"public_host"`
 	PublicPort   uint16                `json:"public_port"`
 	VLESSReality *EditableVLESSReality `json:"vless_reality,omitempty"`
 }
@@ -78,7 +81,7 @@ func Editable(value Configuration) EditableConfiguration {
 		services[index] = EditableService{
 			Type: service.Type, Enabled: service.Enabled, ServiceID: service.ServiceID,
 			DisplayName: service.DisplayName, Listen: service.Listen, Port: service.Port,
-			PublicPort: service.PublicPort, VLESSReality: editableVLESSReality(service.VLESSReality),
+			PublicHost: service.PublicHost, PublicPort: service.PublicPort, VLESSReality: editableVLESSReality(service.VLESSReality),
 		}
 	}
 	return EditableConfiguration{
@@ -119,6 +122,11 @@ func MergeEditable(configuration Configuration, value EditableConfiguration) (Co
 		service.DisplayName = editable.DisplayName
 		service.Listen = editable.Listen
 		service.Port = editable.Port
+		publicHost, err := normalizePublicHost(editable.PublicHost)
+		if err != nil {
+			return Configuration{}, fmt.Errorf("services[%d].public_host: %w", index, err)
+		}
+		service.PublicHost = publicHost
 		service.PublicPort = editable.PublicPort
 		services[index] = service
 	}
@@ -215,6 +223,13 @@ func validateCommonService(apiPort uint16, service Service, field string) error 
 	if service.Port == 0 || service.PublicPort == 0 {
 		return fmt.Errorf("%s.port and public_port: must be between 1 and 65535", field)
 	}
+	publicHost, err := normalizePublicHost(service.PublicHost)
+	if err != nil {
+		return fmt.Errorf("%s.public_host: %w", field, err)
+	}
+	if publicHost != service.PublicHost {
+		return fmt.Errorf("%s.public_host: must use its canonical lowercase form", field)
+	}
 	if service.Port == apiPort && (listen.IsLoopback() || listen.IsUnspecified()) {
 		return fmt.Errorf("%s.port: conflicts with the local API port", field)
 	}
@@ -308,6 +323,22 @@ func validateDisplayName(value string) error {
 		}
 	}
 	return nil
+}
+
+func normalizePublicHost(value string) (string, error) {
+	if value == "" || value != strings.TrimSpace(value) {
+		return "", fmt.Errorf("is required")
+	}
+	if address, err := netip.ParseAddr(value); err == nil {
+		if address.String() != value || address.IsUnspecified() {
+			return "", fmt.Errorf("must be a canonical IP other than an unspecified address")
+		}
+		return value, nil
+	}
+	if len(value) > 253 || !publicDomainPattern.MatchString(value) {
+		return "", fmt.Errorf("must be a domain or canonical IP without a port")
+	}
+	return strings.ToLower(value), nil
 }
 
 func requireEOF(decoder *json.Decoder) error {

@@ -43,6 +43,7 @@ export function ServiceDialog({ initial, editingID, serviceTypes, existingIDs, t
       service_id: value.service_id.trim(),
       display_name: value.display_name.trim(),
       listen: value.listen.trim(),
+      public_host: value.public_host.trim(),
       vless_reality: {
         ...value.vless_reality,
         target: value.vless_reality.target.trim(),
@@ -117,6 +118,10 @@ export function ServiceDialog({ initial, editingID, serviceTypes, existingIDs, t
               <div className="grid gap-2">
                 <Label htmlFor="service-port">{t("Listen port")}</Label>
                 <Input id="service-port" type="number" min={1} max={65535} value={value.port} required onChange={(event) => setValue({ ...value, port: Number(event.target.value) })} />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="service-public-host">{t("Public host")}</Label>
+                <Input id="service-public-host" value={value.public_host} required onChange={(event) => setValue({ ...value, public_host: event.target.value })} />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="service-public-port">{t("Public port")}</Label>

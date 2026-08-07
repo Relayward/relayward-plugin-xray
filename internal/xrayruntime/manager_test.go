@@ -326,14 +326,14 @@ func TestManagerControlsAndRestoresMultipleServices(t *testing.T) {
 	configuration, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 443,
+			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
 			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443,
+			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
 			},
@@ -441,7 +441,7 @@ func testConfigurationValue(t *testing.T, listen string) config.Configuration {
 	t.Helper()
 	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{{
 		Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: testServiceID, DisplayName: "VLESS Reality",
-		Listen: listen, Port: 443, PublicPort: 443,
+		Listen: listen, Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 		VLESSReality: &config.EditableVLESSReality{
 			Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
 		},

@@ -25,6 +25,7 @@ export interface ProxyService {
   display_name: string
   listen: string
   port: number
+  public_host: string
   public_port: number
   vless_reality: VLESSReality
 }

@@ -60,6 +60,19 @@ func TestSupportedServiceTypeCatalogIsDefensive(t *testing.T) {
 	}
 }
 
+func TestNewConfigurationNormalizesPublicHost(t *testing.T) {
+	t.Parallel()
+	services := testEditableServices()[:1]
+	services[0].PublicHost = "EDGE.EXAMPLE.COM"
+	value, err := NewConfiguration("26.3.27", 10085, services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Services[0].PublicHost != "edge.example.com" {
+		t.Fatalf("public host = %q", value.Services[0].PublicHost)
+	}
+}
+
 func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 	t.Parallel()
 	value, err := NewConfiguration("26.3.27", 10085, testEditableServices())
@@ -69,14 +82,16 @@ func TestDecodeRejectsInvalidConfigurations(t *testing.T) {
 	value.Routing = testRoutingConfiguration()
 	valid, _ := Encode(value)
 	tests := map[string]func(*Configuration){
-		"missing version":      func(value *Configuration) { value.XrayVersion = "" },
-		"leading v":            func(value *Configuration) { value.XrayVersion = "v26.3.27" },
-		"pre-release":          func(value *Configuration) { value.XrayVersion = "26.3.27-rc.1" },
-		"privileged API":       func(value *Configuration) { value.APIPort = 80 },
-		"invalid seed":         func(value *Configuration) { value.CredentialSeed = "secret" },
-		"unsupported type":     func(value *Configuration) { value.Services[0].Type = "trojan" },
-		"invalid service ID":   func(value *Configuration) { value.Services[0].ServiceID = "Invalid ID" },
-		"duplicate service ID": func(value *Configuration) { value.Services[1].ServiceID = value.Services[0].ServiceID },
+		"missing version":       func(value *Configuration) { value.XrayVersion = "" },
+		"leading v":             func(value *Configuration) { value.XrayVersion = "v26.3.27" },
+		"pre-release":           func(value *Configuration) { value.XrayVersion = "26.3.27-rc.1" },
+		"privileged API":        func(value *Configuration) { value.APIPort = 80 },
+		"invalid seed":          func(value *Configuration) { value.CredentialSeed = "secret" },
+		"unsupported type":      func(value *Configuration) { value.Services[0].Type = "trojan" },
+		"invalid service ID":    func(value *Configuration) { value.Services[0].ServiceID = "Invalid ID" },
+		"missing public host":   func(value *Configuration) { value.Services[0].PublicHost = "" },
+		"public host with port": func(value *Configuration) { value.Services[0].PublicHost = "edge.example.com:443" },
+		"duplicate service ID":  func(value *Configuration) { value.Services[1].ServiceID = value.Services[0].ServiceID },
 		"unsorted services": func(value *Configuration) {
 			value.Services[0], value.Services[1] = value.Services[1], value.Services[0]
 		},
@@ -305,14 +320,14 @@ func testEditableServices() []EditableService {
 	return []EditableService{
 		{
 			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 443,
+			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 			VLESSReality: &EditableVLESSReality{
 				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
 			},
 		},
 		{
 			Type: ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443,
+			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
 			VLESSReality: &EditableVLESSReality{
 				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
 			},

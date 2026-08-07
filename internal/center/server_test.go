@@ -235,7 +235,7 @@ func TestRenderSubscription(t *testing.T) {
 	}
 	request := &centerpluginv1.RenderSubscriptionRequest{
 		AuthorizationId: "10000000-0000-4000-8000-000000000001",
-		NodeId:          "20000000-0000-4000-8000-000000000002", PublicAddress: "edge.example.com",
+		NodeId:          "20000000-0000-4000-8000-000000000002",
 		Services: []*centerpluginv1.SubscriptionServiceBinding{
 			{ServiceId: "reality-backup", DisplayName: "Edge Backup"},
 			{ServiceId: "reality-main", DisplayName: "Edge Main"},
@@ -255,14 +255,14 @@ func testConfigurationJSON(t *testing.T) json.RawMessage {
 	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 443,
+			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
 			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 8443, PublicPort: 8443,
+			Listen: "0.0.0.0", Port: 8443, PublicHost: "backup.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
 			},

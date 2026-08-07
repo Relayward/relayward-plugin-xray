@@ -14,7 +14,7 @@ func TestRenderMultipleServicesInAllFormatsWithStableCredentials(t *testing.T) {
 	configuration := testConfiguration(t)
 	request := &centerpluginv1.RenderSubscriptionRequest{
 		AuthorizationId: "10000000-0000-4000-8000-000000000001",
-		NodeId:          "20000000-0000-4000-8000-000000000002", PublicAddress: "edge.example.com",
+		NodeId:          "20000000-0000-4000-8000-000000000002",
 		Services: []*centerpluginv1.SubscriptionServiceBinding{
 			{ServiceId: "reality-backup", DisplayName: "Edge Backup"},
 			{ServiceId: "reality-main", DisplayName: "Edge Main"},
@@ -36,14 +36,15 @@ func TestRenderMultipleServicesInAllFormatsWithStableCredentials(t *testing.T) {
 		first.Services[0].Uris[0] == first.Services[1].Uris[0] {
 		t.Fatalf("rendered subscription = %+v", first)
 	}
-	if !bytes.Contains(first.Services[0].MihomoProxiesJson[0], []byte(`"server":"edge.example.com"`)) ||
+	if !bytes.Contains(first.Services[0].MihomoProxiesJson[0], []byte(`"server":"backup.example.com"`)) ||
+		!bytes.Contains(first.Services[1].MihomoProxiesJson[0], []byte(`"server":"edge.example.com"`)) ||
 		!bytes.Contains(first.Services[0].SingBoxOutboundsJson[0], []byte(`"server_port":9443`)) ||
 		!bytes.Contains(first.Services[1].SingBoxOutboundsJson[0], []byte(`"server_port":8443`)) {
 		t.Fatalf("rendered fragments = %+v", first.Services)
 	}
 }
 
-func TestRenderRejectsMissingPublicAddressAndUnknownService(t *testing.T) {
+func TestRenderRejectsUnknownService(t *testing.T) {
 	t.Parallel()
 	configuration := testConfiguration(t)
 	request := &centerpluginv1.RenderSubscriptionRequest{
@@ -53,10 +54,6 @@ func TestRenderRejectsMissingPublicAddressAndUnknownService(t *testing.T) {
 			ServiceId: "reality-main", DisplayName: "Edge VLESS",
 		}},
 	}
-	if _, err := Render(configuration, request); err == nil {
-		t.Fatal("Render() accepted a missing public address")
-	}
-	request.PublicAddress = "edge.example.com"
 	request.Services[0].ServiceId = "unknown"
 	if _, err := Render(configuration, request); err == nil {
 		t.Fatal("Render() accepted an unknown service")
@@ -78,14 +75,14 @@ func testConfiguration(t *testing.T) config.Configuration {
 	value, err := config.NewConfiguration("26.3.27", 10085, []config.EditableService{
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "0.0.0.0", Port: 443, PublicPort: 8443,
+			Listen: "0.0.0.0", Port: 443, PublicHost: "edge.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "www.microsoft.com:443", ServerName: "www.microsoft.com", Fingerprint: "chrome",
 			},
 		},
 		{
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-backup", DisplayName: "Reality Backup",
-			Listen: "0.0.0.0", Port: 444, PublicPort: 9443,
+			Listen: "0.0.0.0", Port: 444, PublicHost: "backup.example.com", PublicPort: 9443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "www.cloudflare.com:443", ServerName: "www.cloudflare.com", Fingerprint: "chrome",
 			},

@@ -52,7 +52,7 @@ function isService(value: unknown): value is ProxyService {
   if (!isRecord(value) || !isRecord(value.vless_reality)) return false
   return typeof value.type === "string" && typeof value.enabled === "boolean" &&
     typeof value.service_id === "string" && typeof value.display_name === "string" &&
-    typeof value.listen === "string" && Number.isInteger(value.port) && Number.isInteger(value.public_port) &&
+    typeof value.listen === "string" && Number.isInteger(value.port) && typeof value.public_host === "string" && Number.isInteger(value.public_port) &&
     typeof value.vless_reality.target === "string" && typeof value.vless_reality.server_name === "string" &&
     typeof value.vless_reality.fingerprint === "string"
 }

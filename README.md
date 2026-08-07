@@ -53,7 +53,7 @@ After installation, the plugin must report `active` and `healthy` before a node 
 
 1. Open the installed **Relayward Xray** plugin and select an enrolled, online node.
 2. Select a stable official Xray version and add a VLESS + REALITY service.
-3. Review the listener, public port, REALITY target and server names. Configure routing and DNS only when required.
+3. Review the listener, public host and port, REALITY target and server names. Configure routing and DNS only when required.
 4. Save the node configuration. The Agent installs the node artifact, the plugin downloads and verifies the official Xray release, starts Xray, and publishes the service catalog to Relayward.
 5. Wait until **Plugins > Node instances** reports the desired generation as applied and the runtime as running.
 6. Open the configured TCP port in the node firewall, provider firewall, and any NAT port mapping. Relayward and this plugin do not modify host firewall rules.
@@ -79,6 +79,7 @@ Relayward treats runtime-plugin configuration as opaque JSON. The Xray plugin ow
       "display_name": "Reality Main",
       "listen": "0.0.0.0",
       "port": 443,
+      "public_host": "edge.example.com",
       "public_port": 443,
       "vless_reality": {
         "target": "addons.mozilla.org:443",

@@ -4,18 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"net/netip"
 	"net/url"
-	"regexp"
 	"strconv"
-	"strings"
 
 	centerpluginv1 "github.com/Relayward/relayward-sdk/centerplugin/v1"
 
 	"github.com/Relayward/relayward-plugin-xray/internal/config"
 )
-
-var publicDomainPattern = regexp.MustCompile(`^(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$`)
 
 func SupportsServiceType(serviceType string) bool {
 	return serviceType == config.ServiceTypeVLESSReality
@@ -35,10 +30,6 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 	if err := config.Validate(configuration); err != nil {
 		return nil, errors.New("stored Xray configuration is invalid")
 	}
-	host, err := normalizePublicAddress(request.PublicAddress)
-	if err != nil {
-		return nil, err
-	}
 	response := &centerpluginv1.RenderSubscriptionResponse{
 		Services: make([]*centerpluginv1.SubscriptionServiceContribution, len(request.Services)),
 	}
@@ -50,7 +41,7 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 		if !service.Enabled {
 			return nil, errors.New("subscription requests a disabled Xray service")
 		}
-		contribution, err := renderService(configuration, service, binding, host, request.AuthorizationId)
+		contribution, err := renderService(configuration, service, binding, request.AuthorizationId)
 		if err != nil {
 			return nil, err
 		}
@@ -63,18 +54,18 @@ func Render(configuration config.Configuration, request *centerpluginv1.RenderSu
 }
 
 func renderService(configuration config.Configuration, service config.Service,
-	binding *centerpluginv1.SubscriptionServiceBinding, host, authorizationID string,
+	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string,
 ) (*centerpluginv1.SubscriptionServiceContribution, error) {
 	switch service.Type {
 	case config.ServiceTypeVLESSReality:
-		return renderVLESSReality(configuration, service, binding, host, authorizationID)
+		return renderVLESSReality(configuration, service, binding, authorizationID)
 	default:
 		return nil, errors.New("subscription requests an unsupported Xray service type")
 	}
 }
 
 func renderVLESSReality(configuration config.Configuration, service config.Service,
-	binding *centerpluginv1.SubscriptionServiceBinding, host, authorizationID string,
+	binding *centerpluginv1.SubscriptionServiceBinding, authorizationID string,
 ) (*centerpluginv1.SubscriptionServiceContribution, error) {
 	reality := service.VLESSReality
 	publicKey, err := config.RealityPublicKey(reality.PrivateKey)
@@ -87,10 +78,10 @@ func renderVLESSReality(configuration config.Configuration, service config.Servi
 	if err != nil {
 		return nil, err
 	}
-	uri := vlessURI(host, service.PublicPort, credential, binding.DisplayName, reality.Flow,
+	uri := vlessURI(service.PublicHost, service.PublicPort, credential, binding.DisplayName, reality.Flow,
 		reality.Fingerprint, serverName, publicKey, shortID)
 	mihomo, err := json.Marshal(map[string]any{
-		"name": binding.DisplayName, "type": "vless", "server": host, "port": service.PublicPort,
+		"name": binding.DisplayName, "type": "vless", "server": service.PublicHost, "port": service.PublicPort,
 		"uuid": credential, "network": "tcp", "tls": true, "udp": true, "flow": reality.Flow,
 		"servername": serverName, "client-fingerprint": reality.Fingerprint,
 		"reality-opts": map[string]any{"public-key": publicKey, "short-id": shortID},
@@ -99,7 +90,7 @@ func renderVLESSReality(configuration config.Configuration, service config.Servi
 		return nil, err
 	}
 	singBox, err := json.Marshal(map[string]any{
-		"type": "vless", "tag": binding.DisplayName, "server": host, "server_port": service.PublicPort,
+		"type": "vless", "tag": binding.DisplayName, "server": service.PublicHost, "server_port": service.PublicPort,
 		"uuid": credential, "flow": reality.Flow,
 		"tls": map[string]any{
 			"enabled": true, "server_name": serverName,
@@ -127,20 +118,4 @@ func vlessURI(host string, port uint16, credential, displayName, flow, fingerpri
 	}
 	value.RawQuery = query.Encode()
 	return value.String()
-}
-
-func normalizePublicAddress(value string) (string, error) {
-	if value == "" || value != strings.TrimSpace(value) {
-		return "", errors.New("node public address is required")
-	}
-	if address, err := netip.ParseAddr(value); err == nil {
-		if address.String() != value || address.IsUnspecified() {
-			return "", errors.New("node public address must be a canonical routable host")
-		}
-		return value, nil
-	}
-	if len(value) > 253 || !publicDomainPattern.MatchString(value) {
-		return "", errors.New("node public address must be a domain or canonical IP without a port")
-	}
-	return strings.ToLower(value), nil
 }

@@ -66,6 +66,7 @@ export function nextServiceDefaults(services: ProxyService[], serviceTypes: Serv
     display_name: services.length === 0 ? "VLESS Reality" : `VLESS Reality ${services.length + 1}`,
     listen: "0.0.0.0",
     port,
+    public_host: "edge.example.com",
     public_port: port,
     vless_reality: {
       target: "www.cloudflare.com:443",

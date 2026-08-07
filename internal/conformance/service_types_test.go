@@ -17,7 +17,7 @@ func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
 	fixtures := map[string]config.EditableService{
 		config.ServiceTypeVLESSReality: {
 			Type: config.ServiceTypeVLESSReality, Enabled: true, ServiceID: "reality-main", DisplayName: "Reality Main",
-			Listen: "127.0.0.1", Port: 8443, PublicPort: 8443,
+			Listen: "127.0.0.1", Port: 8443, PublicHost: "edge.example.com", PublicPort: 8443,
 			VLESSReality: &config.EditableVLESSReality{
 				Target: "addons.mozilla.org:443", ServerName: "addons.mozilla.org", Fingerprint: "chrome",
 			},
@@ -59,7 +59,7 @@ func TestRegisteredServiceTypesImplementDeclaredCapabilities(t *testing.T) {
 			if len(definition.Capabilities.SubscriptionFormats) > 0 {
 				request := &centerpluginv1.RenderSubscriptionRequest{
 					AuthorizationId: "10000000-0000-4000-8000-000000000001",
-					NodeId:          "20000000-0000-4000-8000-000000000002", PublicAddress: "edge.example.com",
+					NodeId:          "20000000-0000-4000-8000-000000000002",
 					Services: []*centerpluginv1.SubscriptionServiceBinding{{
 						ServiceId: fixture.ServiceID, DisplayName: fixture.DisplayName,
 					}},

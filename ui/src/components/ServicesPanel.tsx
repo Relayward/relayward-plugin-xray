@@ -42,7 +42,7 @@ export function ServicesPanel({ services, busy, t, onAdd, onEdit, onDelete }: Se
               </div>
               <div className="grid gap-1 text-sm text-muted-foreground">
                 <span>{t("Listen {address}:{port}", { address: service.listen, port: service.port })}</span>
-                <span>{t("Public port {port}", { port: service.public_port })}</span>
+                <span>{t("Public {host}:{port}", { host: service.public_host, port: service.public_port })}</span>
               </div>
               <EntityActions busy={busy} t={t} onEdit={() => onEdit(service)} onDelete={() => onDelete(service)} />
             </article>
